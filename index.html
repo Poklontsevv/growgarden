@@ -1,0 +1,365 @@
+import React, { useState, useEffect, useCallback } from 'react';
+
+// --- УТИЛИТЫ ---
+const Ticks = {
+  GAME: 1000, // Основной тик игры - 1 секунда
+  WEATHER: 15 * 60 * 1000, // 15 минут
+  MARKET: 5 * 60 * 1000, // 5 минут
+  ORDERS: 10 * 60 * 1000, // 10 минут
+};
+const OFFLINE_CAP_HOURS = 3;
+const clamp = (num: number, min: number, max: number) => Math.min(Math.max(num, min), max);
+const formatTime = (seconds: number) => {
+    if (seconds < 0) return '0:00';
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+};
+const fmtMMSS = (totalSec: number): string => {
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${m}:${s < 10 ? '0' : ''}${s}`;
+};
+
+// --- ТИПЫ ДАННЫХ ---
+type CropType = 'Carrot' | 'Tomato' | 'Sunflower' | 'Herb';
+type Weather = 'Sunny' | 'Rainy' | 'Cloudy';
+type EventType = 'None' | 'BeesBoost' | 'Pests';
+type Tab = 'Plant' | 'Shop' | 'Orders' | 'Inventory';
+
+type Crop = {
+  type: CropType;
+  plantedAt: number;
+  stage: 'Seed' | 'Sprout' | 'Mature';
+  progress: number; // 0..1
+  water: number; // 0..100
+  fertilizer: number; // 0..100
+  quality: number; // 1.0..2.0
+  lastWateredAt?: number;
+  lastFertilizedAt?: number;
+};
+
+type Plot = { id: string; crop?: Crop };
+type Inventory = { seeds: Record<CropType, number>; raw: Record<string, number>; products: Record<string, number>; items: Record<string, number> };
+type Order = { id: string; requires: Array<{ item: string; qty: number }>; rewardCoins: number; rewardGems?: number; expiresAt: number };
+type Buildings = {
+  juicer: { level: number; busyUntil?: number }; oilPress: { level: number; busyUntil?: number }; dryer: { level: number; busyUntil?: number };
+  beehive: { level: number; stored: number; lastTick: number }; sprinkler: { level: number; targets: string[] };
+  composter: { level: number; busyUntil?: number }; storage: { level: number; capacity: number };
+};
+type EconomyEnergy = { current: number; max: number; lastRefill: number; regenPerMinute: number };
+type Economy = { coins: number; gems: number; energy: EconomyEnergy; marketTrend: Record<CropType, number>; lastMarketUpdate?: number };
+type World = { weather: Weather; event: EventType; lastWeatherUpdate: number; lastEventUpdate: number; lastOrdersUpdate?: number };
+type Achievements = Record<string, { name: string; progress: number; goal: number; claimed: boolean; reward: string }>;
+type GameState = {
+  plots: Plot[]; inv: Inventory; buildings: Buildings; orders: Order[]; eco: Economy; world: World;
+  streak: { day: number; lastClaim: number }; achievements: Achievements; lastActiveAt: number; upgrades: Record<string, number>;
+};
+
+// --- ИГРОВЫЕ КОНСТАНТЫ И БАЛАНС ---
+const CROP_DATA: Record<CropType, any> = {
+    Carrot: { name: 'Морковь', icon: '🥕', growTime: 30, basePrice: 4, seedPrice: 5, baseYield: 2, qualityPerTick: 0.003, decayWater: 0.4, decayFert: 0.15 },
+    Tomato: { name: 'Помидор', icon: '🍅', growTime: 60, basePrice: 7, seedPrice: 8, baseYield: 3, qualityPerTick: 0.004, decayWater: 0.5, decayFert: 0.18 },
+    Sunflower: { name: 'Подсолнух', icon: '🌻', growTime: 90, basePrice: 10, seedPrice: 12, baseYield: 1, qualityPerTick: 0.005, decayWater: 0.6, decayFert: 0.20 },
+    Herb: { name: 'Травы', icon: '🌿', growTime: 45, basePrice: 5, seedPrice: 6, baseYield: 4, qualityPerTick: 0.002, decayWater: 0.3, decayFert: 0.12 },
+};
+const UPGRADE_DATA: Record<string, any> = {
+    EnergyCap: { name: 'Макс. энергия', baseCost: 20, costScale: 10, effect: (lvl: number) => `+5 Макс. ⚡` },
+    Storage: { name: 'Склад', baseCost: 25, costScale: 15, effect: (lvl: number) => `+20 вмест.` },
+    EnergyRegen: { name: 'Реген. энергии', baseCost: 30, costScale: 15, effect: (lvl: number) => `+0.5 ⚡/мин` },
+}
+
+// --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+const calculateYield = (crop: Crop): number => {
+    const cropData = CROP_DATA[crop.type];
+    return Math.max(1, Math.round(cropData.baseYield * (0.8 + 0.2 * crop.quality)));
+};
+
+function energySecondsToNext(energy: EconomyEnergy, now: number): number {
+  if (energy.current >= energy.max) return 0;
+  const intervalMs = 60000 / Math.max(0.0001, energy.regenPerMinute);
+  const msPassedSinceLastRegen = now - energy.lastRefill;
+  const msLeft = intervalMs - (msPassedSinceLastRegen % intervalMs);
+  return Math.ceil(msLeft / 1000);
+}
+
+const createInitialState = (): GameState => ({
+  plots: Array.from({ length: 6 }, (_, i) => ({ id: `plot-${i}` })),
+  inv: { seeds: { Carrot: 10, Tomato: 5, Sunflower: 0, Herb: 5 }, raw: {}, products: {}, items: { Fertilizer: 5, PestControl: 0 } },
+  buildings: { juicer: { level: 0 }, oilPress: { level: 0 }, dryer: { level: 0 }, beehive: { level: 0, stored: 0, lastTick: Date.now() }, sprinkler: { level: 0, targets: [] }, composter: { level: 0 }, storage: { level: 1, capacity: 50 } },
+  orders: [],
+  eco: {
+    coins: 50, gems: 0,
+    energy: { current: 20, max: 20, lastRefill: Date.now(), regenPerMinute: 1 },
+    marketTrend: { Carrot: 1, Tomato: 1, Sunflower: 1, Herb: 1 },
+    lastMarketUpdate: Date.now()
+  },
+  world: { weather: 'Sunny', event: 'None', lastWeatherUpdate: Date.now(), lastEventUpdate: Date.now(), lastOrdersUpdate: Date.now() },
+  streak: { day: 0, lastClaim: 0 },
+  achievements: { 'harvest_carrot_1': { name: 'Собрать 100 морковок', progress: 0, goal: 100, claimed: false, reward: '100 coins' }, 'complete_orders_1': { name: 'Выполнить 10 заказов', progress: 0, goal: 10, claimed: false, reward: '5 gems' } },
+  lastActiveAt: Date.now(),
+  upgrades: { EnergyCap: 0, Storage: 0, EnergyRegen: 0 },
+});
+
+const generateOrders = (count: number): Order[] => {
+    return Array.from({ length: count }, (_, i) => {
+        const reqItem1 = Object.keys(CROP_DATA)[Math.floor(Math.random() * 4)] as CropType; const reqQty1 = 5 + Math.floor(Math.random() * 10);
+        const reward = Math.floor(CROP_DATA[reqItem1].basePrice * reqQty1 * (1.5 + Math.random() * 0.5));
+        return { id: `order-${Date.now()}-${i}`, requires: [{ item: reqItem1, qty: reqQty1 }], rewardCoins: reward, rewardGems: Math.random() < 0.1 ? 1 : undefined, expiresAt: Date.now() + 15 * 60 * 1000 };
+    });
+};
+
+// --- ОСНОВНОЙ КОМПОНЕНТ ---
+export default function App() {
+  const [gameState, setGameState] = useState<GameState>(() => {
+    try {
+      const saved = localStorage.getItem('growGardenState');
+      let state: GameState = saved ? JSON.parse(saved) : createInitialState();
+      
+      // Миграция и оффлайн расчет
+      if (!state.upgrades) state.upgrades = { EnergyCap: 0, Storage: 0, EnergyRegen: 0 };
+      if (state.eco.energy.regenPerMinute === undefined) state.eco.energy.regenPerMinute = 1;
+
+      const now = Date.now();
+      const dt = Math.min(now - state.lastActiveAt, OFFLINE_CAP_HOURS * 3600 * 1000);
+      const energyGained = Math.floor(dt / 60000 * state.eco.energy.regenPerMinute);
+      if (energyGained > 0) {
+        state.eco.energy.current = Math.min(state.eco.energy.max, state.eco.energy.current + energyGained);
+        state.eco.energy.lastRefill = now;
+      }
+      state.lastActiveAt = now;
+
+      return state;
+    } catch { return createInitialState(); }
+  });
+  
+  const [activeTab, setActiveTab] = useState<Tab>('Plant');
+  const [selectedSeed, setSelectedSeed] = useState<CropType>('Carrot');
+  const [toast, setToast] = useState<string | null>(null);
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    if (!localStorage.getItem('growGardenState')) {
+        showToast("Добро пожаловать! Купите семена в Shop и сажайте их в Plant.");
+        setGameState(prev => ({...prev, orders: generateOrders(3)}));
+    }
+    localStorage.setItem('growGardenState', JSON.stringify(gameState));
+  }, [gameState]);
+
+  const showToast = useCallback((message: string) => { setToast(message); setTimeout(() => setToast(null), 3000); }, []);
+
+  const gameTick = useCallback(() => {
+    const currentTime = Date.now();
+    setNow(currentTime);
+
+    setGameState(prev => {
+      const newState = JSON.parse(JSON.stringify(prev));
+      const dtSec = (currentTime - newState.lastActiveAt) / 1000;
+      
+      // 1. Регенерация энергии
+      const energyDt = currentTime - newState.eco.energy.lastRefill;
+      const energyGained = Math.floor(energyDt / 60000 * newState.eco.energy.regenPerMinute);
+      if (energyGained > 0) {
+          newState.eco.energy.current = Math.min(newState.eco.energy.max, newState.eco.energy.current + energyGained);
+          newState.eco.energy.lastRefill += energyGained * (60000 / newState.eco.energy.regenPerMinute);
+      }
+
+      // 2. Рост, качество и спад
+      if (currentTime - newState.world.lastWeatherUpdate >= Ticks.WEATHER) {
+          newState.world.weather = ['Sunny', 'Rainy', 'Cloudy'][Math.floor(Math.random() * 3)] as Weather;
+          newState.world.lastWeatherUpdate = currentTime;
+      }
+      newState.plots.forEach((plot: Plot) => {
+          if (plot.crop) {
+              const cropData = CROP_DATA[plot.crop.type];
+              if (newState.world.weather === 'Rainy') plot.crop.water = clamp(plot.crop.water + 0.5 * dtSec, 0, 100);
+              plot.crop.water = clamp(plot.crop.water - cropData.decayWater * dtSec, 0, 100);
+              plot.crop.fertilizer = clamp(plot.crop.fertilizer - cropData.decayFert * dtSec, 0, 100);
+              
+              const inGreenZone = plot.crop.water >= 60 && plot.crop.fertilizer >= 40;
+              if (inGreenZone) plot.crop.quality = clamp(plot.crop.quality + cropData.qualityPerTick * dtSec, 1, 2);
+
+              if (plot.crop.progress < 1) {
+                  const inRedZone = plot.crop.water < 20 || plot.crop.fertilizer < 20;
+                  const speed = (newState.world.weather === 'Sunny' ? 1 : 0.9) * (inRedZone ? 0.5 : 1);
+                  plot.crop.progress = clamp(plot.crop.progress + dtSec / cropData.growTime * speed, 0, 1);
+              }
+              plot.crop.stage = plot.crop.progress >= 1 ? 'Mature' : (plot.crop.progress >= 0.5 ? 'Sprout' : 'Seed');
+          }
+      });
+      
+      // 3. Рынок
+      if (currentTime - (newState.eco.lastMarketUpdate || 0) >= Ticks.MARKET) {
+          for (const key in newState.eco.marketTrend) {
+              const trend = newState.eco.marketTrend[key as CropType];
+              newState.eco.marketTrend[key as CropType] = clamp(trend + (Math.random() - 0.5) * 0.1, 0.85, 1.25);
+          }
+          newState.eco.lastMarketUpdate = currentTime;
+      }
+      // 4. Заказы
+      if (currentTime - (newState.world.lastOrdersUpdate || 0) >= Ticks.ORDERS) {
+          newState.orders = generateOrders(3); newState.world.lastOrdersUpdate = currentTime;
+      }
+
+      newState.lastActiveAt = currentTime;
+      return newState;
+    });
+  }, []);
+
+  useEffect(() => { const timer = setInterval(gameTick, Ticks.GAME); return () => clearInterval(timer); }, [gameTick]);
+
+  const spendEnergy = (amount: number): boolean => {
+      if (gameState.eco.energy.current < amount) { showToast("Недостаточно энергии! ⚡"); return false; }
+      setGameState(prev => ({ ...prev, eco: { ...prev.eco, energy: { ...prev.eco.energy, current: prev.eco.energy.current - amount } } }));
+      return true;
+  }
+  
+  const handlePlotClick = (plot: Plot) => {
+    if (plot.crop?.stage === 'Mature') handleHarvest(plot.id);
+    else if (!plot.crop) handlePlant(plot.id);
+  }
+
+  const handlePlant = (plotId: string) => {
+      const seedType = selectedSeed;
+      if ((gameState.inv.seeds[seedType] || 0) < 1) { showToast(`Купите семена ${CROP_DATA[seedType].name} в Shop`); return; }
+      if (!spendEnergy(1)) return;
+      setGameState(prev => {
+          const newPlots = prev.plots.map(p => (p.id === plotId && !p.crop) ? { ...p, crop: { type: seedType, plantedAt: Date.now(), stage: 'Seed', progress: 0, water: 45 + Math.floor(Math.random()*15), fertilizer: 40 + Math.floor(Math.random()*15), quality: 1.0 } } : p);
+          if (newPlots.some(p => p.id === plotId && p.crop?.type === seedType)) {
+            const newSeeds = { ...prev.inv.seeds, [seedType]: prev.inv.seeds[seedType] - 1 };
+            return { ...prev, plots: newPlots, inv: { ...prev.inv, seeds: newSeeds } };
+          } else { showToast("Грядка занята!"); return prev; }
+      });
+  }
+
+  const handleHarvest = (plotId: string) => {
+      const plot = gameState.plots.find(p => p.id === plotId);
+      if (!plot?.crop || plot.crop.stage !== 'Mature' || !spendEnergy(1)) return;
+      
+      const yieldCount = calculateYield(plot.crop);
+      setGameState(prev => ({...prev,
+        plots: prev.plots.map(p => p.id === plotId ? { ...p, crop: undefined } : p),
+        inv: {...prev.inv, raw: {...prev.inv.raw, [plot.crop!.type]: (prev.inv.raw[plot.crop!.type] || 0) + yieldCount }},
+      }));
+      showToast(`Собрано ${CROP_DATA[plot.crop.type].name} x${yieldCount}`);
+  }
+
+  const handleCareFor = (plotId: string, action: 'water' | 'fertilize') => {
+      const plot = gameState.plots.find(p => p.id === plotId);
+      if (!plot?.crop) { showToast("Здесь нечего поливать/удобрять"); return; }
+      
+      if (action === 'water' && spendEnergy(1)) {
+        setGameState(prev => ({...prev, plots: prev.plots.map(p => p.id === plotId ? {...p, crop: {...p.crop!, water: clamp(p.crop!.water + 25, 0, 100), lastWateredAt: Date.now()}} : p)}));
+      } else if (action === 'fertilize') {
+        if (gameState.inv.items.Fertilizer < 1) { showToast("Нет удобрений"); return; }
+        if (spendEnergy(2)) {
+            setGameState(prev => ({...prev,
+                plots: prev.plots.map(p => p.id === plotId ? {...p, crop: {...p.crop!, fertilizer: clamp(p.crop!.fertilizer + 25, 0, 100), lastFertilizedAt: Date.now()}} : p),
+                inv: {...prev.inv, items: {...prev.inv.items, Fertilizer: prev.inv.items.Fertilizer - 1}}
+            }));
+        }
+      }
+  }
+
+  const handleBuy = (type: 'seed'|'item'|'upgrade', key: string) => {
+    const level = gameState.upgrades[key] || 0;
+    const cost = type === 'seed' ? CROP_DATA[key as CropType].seedPrice : type === 'item' ? (key === 'Fertilizer' ? 5 : 8) : UPGRADE_DATA[key].baseCost + UPGRADE_DATA[key].costScale * level;
+    if (gameState.eco.coins < cost) { showToast("Недостаточно монет!"); return; }
+    setGameState(prev => {
+        const newState = {...prev, eco: {...prev.eco, coins: prev.eco.coins - cost}};
+        if (type === 'seed') newState.inv.seeds[key as CropType]++;
+        if (type === 'item') newState.inv.items[key]++;
+        if (type === 'upgrade') {
+            newState.upgrades[key]++;
+            if (key === 'EnergyCap') newState.eco.energy.max += 5;
+            if (key === 'Storage') newState.buildings.storage.capacity += 20;
+            if (key === 'EnergyRegen') newState.eco.energy.regenPerMinute += 0.5;
+        }
+        return newState;
+    });
+    showToast("Покупка совершена!");
+  }
+
+  const handleSell = (item: string, amount: 'one' | 'all') => {
+      const qty = amount === 'one' ? 1 : (gameState.inv.raw[item] || 0);
+      if (qty === 0) return;
+      const price = Math.floor(CROP_DATA[item as CropType].basePrice * gameState.eco.marketTrend[item as CropType]);
+      setGameState(prev => ({...prev, 
+          eco: {...prev.eco, coins: prev.eco.coins + (price * qty)},
+          inv: {...prev.inv, raw: {...prev.inv.raw, [item]: prev.inv.raw[item] - qty}}
+      }));
+      showToast(`Продано на ${price * qty}💰`);
+  }
+  
+  const handleFulfillOrder = (order: Order) => {
+    if (order.requires.every(req => (gameState.inv.raw[req.item] || 0) >= req.qty)) {
+        setGameState(prev => {
+            const newRaw = {...prev.inv.raw};
+            order.requires.forEach(req => newRaw[req.item] -= req.qty);
+            return {...prev, inv: {...prev.inv, raw: newRaw}, eco: { ...prev.eco, coins: prev.eco.coins + order.rewardCoins, gems: prev.eco.gems + (order.rewardGems || 0) }, orders: prev.orders.filter(o => o.id !== order.id) }
+        });
+        showToast(`Заказ выполнен! +${order.rewardCoins}💰`);
+    } else { showToast("Недостаточно ресурсов!"); }
+  }
+  
+  const { eco, inv, plots, world } = gameState;
+  const getWeatherIcon = (weather: Weather) => ({'Sunny': '☀️', 'Rainy': '🌧️', 'Cloudy': '☁️'}[weather]);
+  
+  return (
+    <div className="bg-green-100 text-gray-800 font-sans h-screen w-screen flex flex-col items-center overflow-hidden antialiased">
+        {toast && <div className="absolute top-5 bg-blue-500 text-white px-6 py-2 rounded-full shadow-lg z-50 animate-bounce">{toast}</div>}
+        <div className="w-full h-full flex flex-col" style={{ maxWidth: '540px' }}>
+            <div className="flex-[2] bg-green-400 p-4 flex flex-col items-center justify-center relative rounded-b-2xl shadow-lg">
+                <div className="absolute top-2 right-2 flex flex-col items-end gap-1 text-sm z-10">
+                    <div className="bg-yellow-400 text-yellow-900 font-bold px-3 py-1 rounded-full shadow-md">💰 {eco.coins}</div>
+                    <div className="bg-purple-400 text-purple-900 font-bold px-3 py-1 rounded-full shadow-md">💎 {eco.gems}</div>
+                    <div className="bg-blue-300 text-blue-900 font-bold px-3 py-1 rounded-full shadow-md leading-tight flex flex-col items-end">
+                      <span>⚡ {eco.energy.current}/{eco.energy.max}</span>
+                      <span className="text-[10px] font-normal opacity-80">
+                        {eco.energy.current >= eco.energy.max ? 'Full' : `+1 in ${fmtMMSS(energySecondsToNext(eco.energy, now))}`}
+                      </span>
+                    </div>
+                </div>
+                <div className="absolute top-2 left-2 text-3xl">{getWeatherIcon(world.weather)}</div>
+                <div className="grid grid-cols-3 gap-3 w-full max-w-xs">
+                    {plots.map(plot => (
+                        <div key={plot.id} onClick={() => handlePlotClick(plot)} className={`relative aspect-square rounded-lg flex flex-col items-center justify-center cursor-pointer transition-all duration-200 border-2 bg-yellow-700/80 border-yellow-800`}>
+                            {plot.crop ? (<>
+                                {now - (plot.crop.lastWateredAt || 0) < 2000 && <span className="absolute text-lg animate-ping z-20">💧</span>}
+                                {now - (plot.crop.lastFertilizedAt || 0) < 2000 && <span className="absolute text-lg animate-ping z-20">🌿</span>}
+                                
+                                <div className="absolute top-1 right-1 flex gap-1 z-10">
+                                    <button onClick={(e) => { e.stopPropagation(); handleCareFor(plot.id, 'water'); }} className="bg-black/30 rounded px-1 text-xs" title="Полить 1⚡">💧</button>
+                                    <button onClick={(e) => { e.stopPropagation(); handleCareFor(plot.id, 'fertilize'); }} className="bg-black/30 rounded px-1 text-xs" title="Удобрить 2⚡">🌿</button>
+                                </div>
+
+                                <div className="text-4xl">{CROP_DATA[plot.crop.type].icon}</div>
+                                <div className="text-xs text-white bg-black/30 rounded-full px-1.5 -mt-1">{plot.crop.stage}</div>
+                                {plot.crop.stage === 'Mature' && <div className="text-xs font-bold text-green-300">x{calculateYield(plot.crop)}</div>}
+                                
+                                <div className="absolute bottom-1 left-1 right-1 flex flex-col gap-0.5">
+                                    <div className="h-1.5 bg-black/20 rounded-full"><div style={{width: `${plot.crop.water}%`}} className="h-full bg-blue-400 rounded-full"></div></div>
+                                    <div className="h-1.5 bg-black/20 rounded-full"><div style={{width: `${plot.crop.fertilizer}%`}} className="h-full bg-orange-400 rounded-full"></div></div>
+                                </div>
+                            </>) : <div className="text-gray-400 text-xs text-center">Пусто</div>}
+                        </div>
+                    ))}
+                </div>
+            </div>
+            <div className="flex-[1] bg-yellow-800/90 w-full p-2 flex flex-col text-white">
+                <div className="flex justify-center gap-1 mb-2">
+                    {(['Plant', 'Shop', 'Orders', 'Inventory'] as Tab[]).map(tab => <button key={tab} onClick={() => setActiveTab(tab)} className={`px-2 py-1 text-xs rounded-t-lg ${activeTab === tab ? 'bg-yellow-600 font-bold' : 'bg-yellow-900'}`}>{tab}</button>)}
+                </div>
+                <div className="bg-yellow-600 flex-grow rounded-lg p-2 text-xs overflow-y-auto">
+                    {activeTab === 'Plant' && <div><h3 className="text-center font-bold mb-1">Посадка</h3><div className="flex justify-around bg-black/20 p-1 rounded-md mb-2">{Object.entries(CROP_DATA).map(([key, c]) => (<button key={key} onClick={() => setSelectedSeed(key as CropType)} className={`p-1 rounded ${selectedSeed === key ? 'bg-green-500' : ''}`}>{c.icon} {inv.seeds[key as CropType] || 0}</button>))}</div>{Object.values(inv.seeds).every(v=>v===0) && Object.values(inv.raw).every(v=>v===0) && <p className="text-center bg-red-800 p-1 rounded">Нет семян! Откройте Shop и купите Carrot Seeds (5💰).</p>}</div>}
+                    {activeTab === 'Shop' && <div><h3 className="font-bold mb-1 text-center">Магазин</h3><strong>Семена:</strong><div className="flex gap-2 mb-2">{Object.entries(CROP_DATA).map(([key, val]) => <button key={key} disabled={eco.coins < val.seedPrice} onClick={() => handleBuy('seed', key)} className="flex-1 p-1 bg-green-700 rounded disabled:opacity-50">{val.icon} {val.seedPrice}💰</button>)}</div><strong>Уход:</strong><div className="flex gap-2 mb-2"><button onClick={() => handleBuy('item', 'Fertilizer')} disabled={eco.coins < 5} className="flex-1 p-1 bg-orange-700 rounded disabled:opacity-50">Удобрение 5💰</button><button onClick={() => handleBuy('item', 'PestControl')} disabled={eco.coins < 8} className="flex-1 p-1 bg-red-700 rounded disabled:opacity-50">Защита 8💰</button></div><strong>Улучшения:</strong>{Object.entries(UPGRADE_DATA).map(([key, val]) => { const lvl = gameState.upgrades[key] || 0; const cost = val.baseCost + val.costScale * lvl; return <button key={key} disabled={eco.coins < cost} onClick={()=>handleBuy('upgrade', key)} className="w-full p-1 bg-purple-700 rounded mb-1 disabled:opacity-50 text-left">{val.name} (Lvl {lvl})<span className="float-right">{cost}💰</span></button> })}</div>}
+                    {activeTab === 'Orders' && <div><h3 className="font-bold mb-1 text-center">Заказы</h3>{gameState.orders.length === 0 ? <p className="text-center opacity-70">Новые заказы скоро появятся...</p> : gameState.orders.map(order => (<div key={order.id} className="bg-black/20 p-1.5 rounded mb-1"><div>Требуется: {order.requires.map(r => `${r.item} x${r.qty}`).join(', ')}</div><div>Награда: {order.rewardCoins}💰 {order.rewardGems && `${order.rewardGems}💎`}</div><div className="flex justify-between items-center"><span className="opacity-70">Истекает: {formatTime((order.expiresAt - now)/1000)}</span><button onClick={() => handleFulfillOrder(order)} disabled={!order.requires.every(req => (inv.raw[req.item] || 0) >= req.qty)} className="px-2 py-0.5 bg-green-600 rounded disabled:opacity-50">Сдать</button></div></div>))}</div>}
+                    {activeTab === 'Inventory' && <div><h3 className="font-bold mb-1 text-center">Инвентарь и Продажа</h3>{Object.keys(inv.raw).filter(k => (inv.raw[k] || 0) > 0).length === 0 ? <p className="opacity-70 text-center">Соберите урожай, чтобы продать его здесь.</p> : Object.entries(inv.raw).map(([key, val]) => val > 0 && <div key={key} className="flex items-center justify-between bg-black/20 p-1 rounded mb-1"><span>{CROP_DATA[key as CropType].icon} {key}: {val} (x{eco.marketTrend[key as CropType].toFixed(2)})</span><div className="flex gap-1"><button onClick={() => handleSell(key, 'one')} className="px-2 bg-red-600 rounded">1</button><button onClick={() => handleSell(key, 'all')} className="px-2 bg-red-800 rounded">Все</button></div></div>)}</div>}
+                </div>
+                <div className="text-center text-xs opacity-60 mt-1">⚡ +{eco.energy.regenPerMinute.toFixed(1)}/мин · Посадка 1⚡ · Полив 1⚡ · Удобрение 2⚡ · Сбор 1⚡</div>
+            </div>
+        </div>
+    </div>
+  );
+}
+
