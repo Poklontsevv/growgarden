@@ -99,9 +99,26 @@
     /* Таймер энергии */
     .energy-timer{ font-size: 10px; line-height: 1; opacity: .85; }
     
-    /* Анимация роста */
+    /* Анимация */
     @keyframes grow-pop{0%{transform:scale(.7);opacity:0}100%{transform:scale(1);opacity:1}}
     .stage-pop{animation:grow-pop .25s ease-out}
+    @keyframes pulse-hot { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.1); } }
+    .hot-pulse { animation: pulse-hot 1.5s ease-in-out infinite; }
+    
+    /* Бейдж жары */
+    @keyframes heat-pulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.06)} }
+    .heat-pulse{ animation: heat-pulse 1.2s ease-in-out infinite; }
+
+    /* Гусеницы по полю */
+    .bug-layer{ pointer-events:none; position: absolute; inset: 0; z-index: 5;}
+    .bug{ position:absolute; font-size:22px; filter: drop-shadow(0 1px 2px rgba(0,0,0,.25)); pointer-events: auto; cursor: pointer;}
+    @keyframes crawl-x { 0%{transform:translateX(-10%)} 100%{transform:translateX(110%)} }
+    @keyframes crawl-y { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-8px)} }
+    .bug-run{
+      animation:
+        crawl-x var(--t,9s) linear infinite,
+        crawl-y 2.2s ease-in-out infinite;
+    }
   </style>
 </head>
 <body>
@@ -143,7 +160,7 @@
     // --- GAME CODE STARTS HERE ---
     
     // --- УТИЛИТЫ ---
-    const Ticks = { GAME: 1000, WEATHER: 15 * 60 * 1000, MARKET: 5 * 60 * 1000, ORDERS: 10 * 60 * 1000, SHOP: 5 * 60 * 1000 };
+    const Ticks = { GAME: 1000, WEATHER: 15 * 60 * 1000, MARKET: 5 * 60 * 1000, ORDERS: 10 * 60 * 1000, SHOP: 5 * 60 * 1000, MICRO: 30000 };
     const OFFLINE_CAP_HOURS = 3;
     const clamp = (num, min, max) => Math.min(Math.max(num, min), max);
     const formatTime = (seconds) => {
@@ -167,7 +184,22 @@
     }
     const colsFor = (n) => n <= 6 ? 3 : n <= 9 ? 3 : n <= 12 ? 4 : 4;
     const stageIcon = (type, stage) => stage === 'Seed' ? '🌱' : stage === 'Sprout' ? '🌿' : CROP_DATA[type].icon;
+    
+    function secondsToNextStage(crop, world){
+      const d = CROP_DATA[crop.type];
+      if (!d || crop.progress >= 1) return 0;
+      
+      let speedMod = (world.weather === 'Sunny' ? 1 : 0.9);
+      const inRedZone = crop.water < 20 || crop.fertilizer < 20;
+      if (inRedZone) speedMod *= 0.5;
+      if (crop.event?.type === 'pests') speedMod *= 0.6;
 
+      const basePerSec = (1 / d.growTime) * speedMod;
+      const target = crop.progress < 0.5 ? 0.5 : 1.0;
+      const remain = Math.max(0, target - crop.progress);
+      const perSec = Math.max(1e-6, basePerSec);
+      return Math.ceil(remain / perSec);
+    }
 
     // --- ИГРОВЫЕ КОНСТАНТЫ И БАЛАНС ---
     const CROP_DATA = {
@@ -235,14 +267,16 @@
         coins: 50, gems: 0,
         energy: { current: 20, max: 20, lastRefill: Date.now(), regenPerMinute: 1 },
         marketTrend: Object.fromEntries(Object.keys(CROP_DATA).map(k=>[k,1])),
-        lastMarketUpdate: Date.now()
+        lastMarketUpdate: Date.now(),
+        hotPrice: null,
       },
-      world: { weather: 'Sunny', event: 'None', lastWeatherUpdate: Date.now(), lastEventUpdate: Date.now(), lastOrdersUpdate: Date.now() },
+      world: { weather: 'Sunny', event: 'None', lastWeatherUpdate: Date.now(), lastEventUpdate: Date.now(), lastOrdersUpdate: Date.now(), lastMicroTick: Date.now(), heatwaveUntil: 0 },
       streak: { day: 0, lastClaim: 0 },
       achievements: { 'harvest_carrot_1': { name: 'Собрать 100 морковок', progress: 0, goal: 100, claimed: false, reward: '100 coins' }, 'complete_orders_1': { name: 'Выполнить 10 заказов', progress: 0, goal: 10, claimed: false, reward: '5 gems' } },
       lastActiveAt: Date.now(),
       upgrades: { EnergyCap: 0, Storage: 0, EnergyRegen: 0, PlotSlots: 0 },
       shop: rollShopStock(),
+      quickQuests: [],
     });
 
     const generateOrders = (count) => {
@@ -253,7 +287,7 @@
             return { id: `order-${Date.now()}-${i}`, requires: [{ item: reqItem1, qty: reqQty1 }], rewardCoins: reward, rewardGems: Math.random() < 0.1 ? 1 : undefined, expiresAt: Date.now() + 15 * 60 * 1000 };
         });
     };
-
+    
     // --- ОСНОВНОЙ КОМПОНЕНТ ---
     function App() {
       const [gameState, setGameState] = useState(() => {
@@ -262,17 +296,22 @@
           let state = saved ? JSON.parse(saved) : createInitialState();
           
           // Migrations for save compatibility
-          if (!state.maxPlots) state.maxPlots = 6;
+          state.maxPlots = state.maxPlots ?? 6;
           if (state.plots.length < state.maxPlots) {
             for (let i = state.plots.length; i < state.maxPlots; i++) {
               state.plots.push({ id: `plot-${i}` });
             }
           }
-          if (!state.shop) state.shop = rollShopStock();
-          if (!state.upgrades) state.upgrades = { EnergyCap: 0, Storage: 0, EnergyRegen: 0, PlotSlots: 0 };
-          if (state.upgrades.PlotSlots === undefined) state.upgrades.PlotSlots = 0;
-          if (!state.inv.seeds) state.inv.seeds = {};
-          if (!state.inv.items) state.inv.items = {Fertilizer:0, PestControl:0};
+          state.shop = state.shop ?? rollShopStock();
+          state.upgrades = state.upgrades ?? { EnergyCap: 0, Storage: 0, EnergyRegen: 0, PlotSlots: 0 };
+          state.upgrades.PlotSlots = state.upgrades.PlotSlots ?? 0;
+          state.inv.seeds = state.inv.seeds ?? {};
+          state.inv.items = state.inv.items ?? {Fertilizer:0, PestControl:0};
+          state.eco.hotPrice = state.eco.hotPrice ?? null;
+          state.quickQuests = state.quickQuests ?? [];
+          state.world = state.world ?? {};
+          state.world.heatwaveUntil = state.world.heatwaveUntil ?? 0;
+
           Object.keys(CROP_DATA).forEach(key => {
             if (typeof state.inv.seeds[key] !== 'number') state.inv.seeds[key] = 0;
             if (typeof state.eco.marketTrend[key] !== 'number') state.eco.marketTrend[key] = 1;
@@ -287,7 +326,7 @@
           }
           state.lastActiveAt = now;
           return state;
-        } catch { return createInitialState(); }
+        } catch(e) { console.error("Failed to load state, resetting.", e); return createInitialState(); }
       });
       
       const [activeTab, setActiveTab] = useState('Plant');
@@ -315,11 +354,11 @@
 
         setGameState(prev => {
           const newState = JSON.parse(JSON.stringify(prev));
-          const dtSec = (currentTime - newState.lastActiveAt) / 1000;
+          const dtSec = (currentTime - (newState.lastActiveAt || currentTime)) / 1000;
           
-          if ((newState.shop?.nextRefresh ?? 0) <= currentTime) {
-            newState.shop = rollShopStock();
-          }
+          if ((newState.shop?.nextRefresh ?? 0) <= currentTime) newState.shop = rollShopStock();
+          if ((newState.eco.hotPrice?.endsAt ?? 0) <= currentTime) newState.eco.hotPrice = null;
+          if (newState.world.heatwaveUntil && newState.world.heatwaveUntil <= currentTime) newState.world.heatwaveUntil = 0;
 
           const energyDt = currentTime - newState.eco.energy.lastRefill;
           const energyGained = Math.floor(energyDt / 60000 * newState.eco.energy.regenPerMinute);
@@ -328,30 +367,70 @@
               newState.eco.energy.lastRefill += energyGained * (60000 / newState.eco.energy.regenPerMinute);
           }
 
-          if (currentTime - newState.world.lastWeatherUpdate >= Ticks.WEATHER) {
+          if (currentTime - (newState.world.lastWeatherUpdate || 0) >= Ticks.WEATHER) {
               newState.world.weather = ['Sunny', 'Rainy', 'Cloudy'][Math.floor(Math.random() * 3)];
               newState.world.lastWeatherUpdate = currentTime;
+              if (newState.world.weather === 'Sunny' && Math.random() < 0.35){
+                  newState.world.heatwaveUntil = currentTime + (90 + Math.random()*90)*1000;
+              }
           }
+          
+          if (currentTime - (newState.world.lastMicroTick || 0) >= Ticks.MICRO) {
+            newState.plots.forEach(plot => {
+              if (plot.crop && !plot.crop.event && Math.random() < 0.08) {
+                const rand = Math.random();
+                let type;
+                if (rand < 0.5) type = 'pests';
+                else if (rand < 0.8) type = 'bees';
+                else type = 'rainCloud';
+                
+                const duration = (type === 'pests' ? 60 + Math.random()*60 : type === 'bees' ? 60 + Math.random()*30 : 45 + Math.random()*45) * 1000;
+                plot.crop.event = { type, startedAt: currentTime, endsAt: currentTime + duration };
+              }
+            });
+            newState.world.lastMicroTick = currentTime;
+          }
+
+          const heatMul = newState.world.heatwaveUntil > currentTime ? 2.25 : 1.0;
           newState.plots.forEach((plot) => {
               if (plot.crop) {
                   const cropData = CROP_DATA[plot.crop.type];
+                  if (plot.crop.event?.endsAt <= currentTime) plot.crop.event = null;
+
+                  const event = plot.crop.event;
+                  let growthSpeedModifier = 1.0;
+                  let waterDecayMul = heatMul;
+                  let fertDecayMul = 1.0;
                   const shieldModifier = (plot.crop.shieldUntil && currentTime < plot.crop.shieldUntil) ? 0.5 : 1.0;
 
-                  if (newState.world.weather === 'Rainy') plot.crop.water = clamp(plot.crop.water + 0.5 * dtSec, 0, 100);
-                  plot.crop.water = clamp(plot.crop.water - cropData.decayWater * dtSec * shieldModifier, 0, 100);
-                  plot.crop.fertilizer = clamp(plot.crop.fertilizer - cropData.decayFert * dtSec * shieldModifier, 0, 100);
-                  
+                  if (event?.type === 'pests') {
+                      growthSpeedModifier *= 0.6;
+                      waterDecayMul *= 1.3;
+                      fertDecayMul *= 1.3;
+                      plot.crop.quality = clamp(plot.crop.quality - 0.005 * dtSec, 0.8, 2);
+                  }
+
+                  if (event?.type !== 'rainCloud') {
+                      if (newState.world.weather === 'Rainy') plot.crop.water = clamp(plot.crop.water + 0.5 * dtSec, 0, 100);
+                      plot.crop.water = clamp(plot.crop.water - cropData.decayWater * dtSec * waterDecayMul * shieldModifier, 0, 100);
+                  } else {
+                      plot.crop.water = clamp(plot.crop.water + 1.5 * dtSec, 0, 100);
+                  }
+
+                  plot.crop.fertilizer = clamp(plot.crop.fertilizer - cropData.decayFert * dtSec * fertDecayMul * shieldModifier, 0, 100);
                   const inGreenZone = plot.crop.water >= 60 && plot.crop.fertilizer >= 40;
                   if (inGreenZone) plot.crop.quality = clamp(plot.crop.quality + cropData.qualityPerTick * dtSec, 1, 2);
-                  
-                  if (plot.crop.progress >= 1){
-                      if (plot.crop.stage !=='Mature'){
-                        plot.crop.stage = 'Mature';
-                        plot.crop.harvestYield = calculateYield(plot.crop);
+
+                  if (plot.crop.progress >= 1) {
+                      if (plot.crop.stage !== 'Mature') {
+                          plot.crop.stage = 'Mature';
+                          plot.crop.harvestYield = calculateYield(plot.crop);
                       }
                   } else {
+                      const weatherBase = (newState.world.weather === 'Sunny' ? 1 : 0.9);
                       const inRedZone = plot.crop.water < 20 || plot.crop.fertilizer < 20;
-                      const speed = (newState.world.weather === 'Sunny' ? 1 : 0.9) * (inRedZone ? 0.5 : 1);
+                      const redMul = inRedZone ? 0.5 : 1;
+                      const speed = weatherBase * redMul * growthSpeedModifier;
                       plot.crop.progress = clamp(plot.crop.progress + dtSec / cropData.growTime * speed, 0, 1);
                       plot.crop.stage = plot.crop.progress >= 0.5 ? 'Sprout' : 'Seed';
                   }
@@ -359,6 +438,10 @@
           });
           
           if (currentTime - (newState.eco.lastMarketUpdate || 0) >= Ticks.MARKET) {
+              if(Math.random() < 0.35 && !newState.eco.hotPrice) {
+                const crop = Object.keys(CROP_DATA)[Math.floor(Math.random() * Object.keys(CROP_DATA).length)];
+                newState.eco.hotPrice = { crop, multiplier: 1.2 + Math.random() * 0.3, endsAt: currentTime + Ticks.MARKET };
+              }
               for (const key in newState.eco.marketTrend) {
                   if (newState.eco.marketTrend.hasOwnProperty(key)) {
                     const trend = newState.eco.marketTrend[key];
@@ -407,7 +490,8 @@
           const plot = gameState.plots.find(p => p.id === plotId);
           if (!plot?.crop || plot.crop.stage !== 'Mature' || !spendEnergy(1)) return;
           
-          const baseYield = plot.crop.harvestYield ?? calculateYield(plot.crop);
+          let baseYield = plot.crop.harvestYield ?? calculateYield(plot.crop);
+          if (plot.crop.event?.type === 'bees') baseYield = Math.round(baseYield * 1.2);
           const bonus = (plot.crop.shieldUntil && now < plot.crop.shieldUntil) ? Math.floor(baseYield * 0.1) : 0;
           const yieldCount = baseYield + bonus;
 
@@ -420,6 +504,8 @@
       }
 
       const handleCareFor = (plotId, action) => {
+          const plot = gameState.plots.find(p => p.id === plotId);
+          if(!plot?.crop) return;
           if (action === 'water') {
             if(!spendEnergy(1)) return;
             haptic('light');
@@ -440,6 +526,10 @@
                 plots: prev.plots.map(p => (p.id === plotId && p.crop) ? {...p, crop: {...p.crop, shieldUntil: Date.now() + 10 * 60 * 1000 }} : p),
                 inv: {...prev.inv, items: {...prev.inv.items, PestControl: prev.inv.items.PestControl - 1}}
             }));
+          } else if (action === 'clear_pests') {
+             if (!spendEnergy(1)) return;
+             haptic('light');
+             setGameState(prev => ({...prev, plots: prev.plots.map(p => (p.id === plotId && p.crop) ? {...p, crop: {...p.crop, event: null}} : p)}));
           }
       }
 
@@ -450,10 +540,7 @@
         
         if (type === 'seed') {
             const stockInfo = gameState.shop.stock[key] || { available: false, qty: 0 };
-            if (!stockInfo.available || stockInfo.qty <= 0) {
-                showToast('Нет в продаже', true);
-                return;
-            }
+            if (!stockInfo.available || stockInfo.qty <= 0) { showToast('Нет в продаже', true); return; }
         }
         
         haptic('success');
@@ -486,7 +573,13 @@
       const handleSell = (item, amount) => {
           const qty = amount === 'one' ? 1 : (gameState.inv.raw[item] || 0);
           if (qty === 0) return;
-          const price = Math.floor(CROP_DATA[item].basePrice * (gameState.eco.marketTrend[item] || 1));
+          
+          let priceMultiplier = gameState.eco.marketTrend[item] || 1;
+          if(gameState.eco.hotPrice?.crop === item) {
+            priceMultiplier *= gameState.eco.hotPrice.multiplier;
+          }
+
+          const price = Math.floor(CROP_DATA[item].basePrice * priceMultiplier);
           haptic('success');
           setGameState(prev => ({...prev, 
               eco: {...prev.eco, coins: prev.eco.coins + (price * qty)},
@@ -510,6 +603,7 @@
       const { eco, inv, plots, world, shop, upgrades } = gameState;
       const getWeatherIcon = (weather) => ({'Sunny': '☀️', 'Rainy': '🌧️', 'Cloudy': '☁️'}[weather]);
       const cols = colsFor(plots.length);
+      const hot = eco.hotPrice;
 
       return (
         <div className="app-container text-gray-800 font-sans">
@@ -526,7 +620,43 @@
                       </span>
                     </div>
                 </div>
-                <div className="absolute top-2 left-2 text-3xl">{getWeatherIcon(world.weather)}</div>
+                
+                {hot && <div className="absolute top-2 left-2 text-center bg-red-500 text-white p-1 rounded-lg shadow-lg">
+                    <span className="hot-pulse text-lg">🔥</span>
+                    <span className="block text-xs font-bold">HOT: {CROP_DATA[hot.crop].icon} x{hot.multiplier.toFixed(2)}</span>
+                    <span className="block text-[10px] opacity-80">{fmtMMSS((hot.endsAt - now)/1000)}</span>
+                </div>}
+                
+                {world.heatwaveUntil > now && (
+                  <div className="absolute top-2 left-2 translate-x-[84px] text-center bg-orange-500 text-white p-1 rounded-lg shadow-lg heat-pulse">
+                    <span className="text-lg">☀️</span>
+                    <span className="block text-xs font-bold">HEAT x2.25</span>
+                    <span className="block text-[10px] opacity-90">{fmtMMSS((world.heatwaveUntil - now)/1000)}</span>
+                  </div>
+                )}
+
+                {plots.some(p => p.crop?.event?.type === 'pests') && (
+                  <div className="bug-layer">
+                    {Array.from({length: Math.min(6, 2 + plots.filter(p=>p.crop?.event?.type==='pests').length*2)}).map((_,i)=>(
+                      <span
+                        key={i}
+                        className="bug bug-run"
+                        style={{
+                          top: `${10 + (i*14)%70}%`,
+                          left: `${-10 - (i*7)%30}%`,
+                          '--t': `${8 + (i%3)*2}s`
+                        }}
+                        onClick={(e)=> {
+                          e.stopPropagation();
+                          if (!spendEnergy(1)) return;
+                          const infected = plots.find(p=>p.crop?.event?.type==='pests');
+                          if (infected) handleCareFor(infected.id, 'clear_pests');
+                        }}
+                      >🐛</span>
+                    ))}
+                  </div>
+                )}
+                
                 <div className="plots" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0,1fr))`, gap: '8px' }}>
                     {plots.map(plot => (
                         <div key={plot.id} onClick={() => handlePlotClick(plot)} className="plot cursor-pointer transition-all duration-200">
@@ -535,6 +665,15 @@
                                 {now - (plot.crop.lastFertilizedAt || 0) < 2000 && <span className="absolute text-lg animate-ping z-20">🌿</span>}
                                 {plot.crop.shieldUntil && now < plot.crop.shieldUntil && <span className="absolute top-1 left-1 text-base">🛡️</span>}
                                 
+                                {plot.crop.event && (
+                                    <div className="absolute top-1 left-1" onClick={e => {
+                                        e.stopPropagation();
+                                        if(plot.crop.event.type === 'pests') handleCareFor(plot.id, 'clear_pests');
+                                    }}>
+                                        <span className="text-lg bg-black/30 p-1 rounded-full">{ {pests:'🐛', bees:'🐝', rainCloud:'☁️'}[plot.crop.event.type] }</span>
+                                    </div>
+                                )}
+
                                 <div className="plot-actions">
                                     <button onClick={(e) => { e.stopPropagation(); handleCareFor(plot.id, 'water'); }} className="plot-btn" title="Полить 1⚡">💧</button>
                                     <button onClick={(e) => { e.stopPropagation(); handleCareFor(plot.id, 'fertilize'); }} className="plot-btn" title="Удобрить 2⚡">🌿</button>
@@ -551,7 +690,11 @@
                                         </div>
                                     </>
                                 ) : (
-                                   <div className="text-xs text-white bg-black/30 rounded-full px-1.5 -mt-1">{plot.crop.stage}</div>
+                                   <div className="text-xs text-white bg-black/30 rounded-full px-1.5 -mt-1 flex items-center gap-1">
+                                      <span>{plot.crop.stage}</span>
+                                      <span className="opacity-90">•</span>
+                                      <span>{fmtMMSS(secondsToNextStage(plot.crop, world))}</span>
+                                   </div>
                                 )}
                                 
                                 <div className="absolute bottom-1 left-1 right-1 flex flex-col gap-0.5">
@@ -570,8 +713,8 @@
                 <div className="panel-scroll bg-yellow-600 rounded-lg p-2 text-xs">
                     {activeTab === 'Plant' && <div><h3 className="text-center font-bold mb-1">Посадка</h3><div className="grid grid-cols-4 sm:grid-cols-5 gap-1 bg-black/20 p-1 rounded-md mb-2">{Object.entries(CROP_DATA).map(([key, c]) => (<button key={key} onClick={() => setSelectedSeed(key)} className={`p-1 rounded text-center ${selectedSeed === key ? 'bg-green-500' : ''}`} title={`${c.name} (у вас: ${inv.seeds[key] || 0})`}><span className="text-2xl">{c.icon}</span><span className="block text-[10px]">x{inv.seeds[key] || 0}</span></button>))}</div><div className="flex justify-center gap-4 text-sm bg-black/20 p-1 rounded-md"><span>🌿 x{inv.items.Fertilizer || 0}</span><span>🛡️ x{inv.items.PestControl || 0}</span></div></div>}
                     {activeTab === 'Shop' && <div><h3 className="font-bold mb-1 text-center">Магазин</h3><div className="text-center opacity-80 mb-1">До обновления: {fmtMMSS(Math.ceil((shop.nextRefresh - now)/1000))}</div><div className="grid grid-cols-2 gap-2 mb-2">{Object.entries(CROP_DATA).map(([key, val]) => { const stockInfo = shop.stock[key] || {available: false, qty: 0}; const canAfford = eco.coins >= val.seedPrice; const inStock = stockInfo.available && stockInfo.qty > 0; return <button key={key} disabled={!canAfford || !inStock} onClick={() => handleBuy('seed', key)} className="text-left p-1 bg-green-700 rounded disabled:opacity-50 flex items-center gap-1">{val.icon} <div className="flex-1"><span className="block">{val.name}</span><span className="text-yellow-300">{val.seedPrice}💰</span></div> <span className="text-[10px] bg-black/30 px-1 rounded">{inStock ? `x${stockInfo.qty}`:'Нет'}</span></button>})}</div><strong>Уход:</strong><div className="flex gap-2 mb-2"><button onClick={() => handleBuy('item', 'Fertilizer')} disabled={eco.coins < 5} className="flex-1 p-1 bg-orange-700 rounded disabled:opacity-50">Удобрение (x{inv.items.Fertilizer || 0}) 5💰</button><button onClick={() => handleBuy('item', 'PestControl')} disabled={eco.coins < 8} className="flex-1 p-1 bg-red-700 rounded disabled:opacity-50">Защита (x{inv.items.PestControl || 0}) 8💰</button></div><strong>Улучшения:</strong>{Object.entries(UPGRADE_DATA).map(([key, val]) => { const lvl = upgrades[key] || 0; const cost = val.baseCost + val.costScale * lvl; const isMaxed = key === 'PlotSlots' && gameState.maxPlots >= 16; return <button key={key} disabled={eco.coins < cost || isMaxed} onClick={()=>handleBuy('upgrade', key)} className="w-full p-1 bg-purple-700 rounded mb-1 disabled:opacity-50 text-left">{val.name} (Lvl {lvl})<span className="float-right">{isMaxed ? 'МАКС' : `${cost}💰`}</span></button> })}</div>}
-                    {activeTab === 'Orders' && <div><h3 className="font-bold mb-1 text-center">Заказы</h3>{gameState.orders.length === 0 ? <p className="text-center opacity-70">Новые заказы скоро появятся...</p> : gameState.orders.map(order => (<div key={order.id} className="bg-black/20 p-1.5 rounded mb-1"><div>Требуется: {order.requires.map(r => `${CROP_DATA[r.item].icon} ${r.item} x${r.qty}`).join(', ')}</div><div>Награда: {order.rewardCoins}💰 {order.rewardGems && `${order.rewardGems}💎`}</div><div className="flex justify-between items-center"><span className="opacity-70">Истекает: {formatTime((order.expiresAt - now)/1000)}</span><button onClick={() => handleFulfillOrder(order)} disabled={!order.requires.every(req => (inv.raw[req.item] || 0) >= req.qty)} className="px-2 py-0.5 bg-green-600 rounded disabled:opacity-50">Сдать</button></div></div>))}</div>}
-                    {activeTab === 'Inventory' && <div><h3 className="font-bold mb-1 text-center">Инвентарь и Продажа</h3>{Object.keys(inv.raw).filter(k => (inv.raw[k] || 0) > 0).length === 0 ? <p className="opacity-70 text-center">Соберите урожай, чтобы продать его здесь.</p> : Object.entries(inv.raw).map(([key, val]) => val > 0 && <div key={key} className="flex items-center justify-between bg-black/20 p-1 rounded mb-1"><span>{CROP_DATA[key].icon} {key}: {val} (x{(eco.marketTrend[key] || 1).toFixed(2)})</span><div className="flex gap-1"><button onClick={() => handleSell(key, 'one')} className="px-2 bg-red-600 rounded">1</button><button onClick={() => handleSell(key, 'all')} className="px-2 bg-red-800 rounded">Все</button></div></div>)}</div>}
+                    {activeTab === 'Orders' && <div><h3 className="font-bold mb-1 text-center">Заказы</h3>{gameState.orders.length === 0 ? <p className="text-center opacity-70">Новые заказы скоро появятся...</p> : gameState.orders.map(order => (<div key={order.id} className="bg-black/20 p-1.5 rounded mb-1"><div>Требуется: {order.requires.map(r => `${CROP_DATA[r.item]?.icon || ''} ${r.item} x${r.qty}`).join(', ')}</div><div>Награда: {order.rewardCoins}💰 {order.rewardGems && `${order.rewardGems}💎`}</div><div className="flex justify-between items-center"><span className="opacity-70">Истекает: {formatTime((order.expiresAt - now)/1000)}</span><button onClick={() => handleFulfillOrder(order)} disabled={!order.requires.every(req => (inv.raw[req.item] || 0) >= req.qty)} className="px-2 py-0.5 bg-green-600 rounded disabled:opacity-50">Сдать</button></div></div>))}</div>}
+                    {activeTab === 'Inventory' && <div><h3 className="font-bold mb-1 text-center">Инвентарь и Продажа</h3>{Object.keys(inv.raw).filter(k => (inv.raw[k] || 0) > 0).length === 0 ? <p className="opacity-70 text-center">Соберите урожай, чтобы продать его здесь.</p> : Object.entries(inv.raw).map(([key, val]) => {if (val > 0 && CROP_DATA[key]) { let priceMultiplier = (eco.marketTrend[key] || 1); if(hot?.crop === key) priceMultiplier *= hot.multiplier; return (<div key={key} className="flex items-center justify-between bg-black/20 p-1 rounded mb-1"><span>{CROP_DATA[key].icon} {key}: {val} {hot?.crop === key ? <span className="text-red-400 font-bold hot-pulse">HOT</span> : `(x${(eco.marketTrend[key] || 1).toFixed(2)})`}</span><div className="flex gap-1"><button onClick={() => handleSell(key, 'one')} className="px-2 bg-red-600 rounded">1</button><button onClick={() => handleSell(key, 'all')} className="px-2 bg-red-800 rounded">Все</button></div></div>)}})}</div>}
                 </div>
                 <div className="text-center text-xs opacity-60 mt-1">⚡ +{eco.energy.regenPerMinute.toFixed(1)}/мин · Посадка 1⚡ · Полив 1⚡ · Удобрение 2⚡ · Сбор 1⚡</div>
             </div>
