@@ -44,27 +44,39 @@
 
     /* Верхняя игровая зона */
     .play-area{
+      position: relative;
       border-radius:16px 16px 24px 24px;
       box-shadow:0 6px 20px rgba(0,0,0,.12);
-      display:flex; align-items:center; justify-content:center;
       padding:12px 14px;
-      padding-right:clamp(64px,16vw,104px);
+      /* небольшой запас под HUD, но не влияющий на вычисление сетки */
+      padding-right: clamp(52px, 12vw, 92px);
       width:100%;
-      max-width: min(92vw, 760px);
+      max-width: 760px;
       margin: 0 auto;
+      overflow: hidden; /* обрезаем всё, что выходит за рамки */
     }
 
-    /* Сетка грядок: центр и «умная» плитка */
+    /* обёртка для сетки — именно на неё кладём слой насекомых */
+    .plots-wrap{
+      position: relative;
+      width: 100%;
+    }
+
+    /* сетка без vmin — только px/%, чтобы на ПК не раздувало */
     .plots{
       width:100%;
       margin:0 auto;
       display:grid;
-      justify-content:center; /* центр */
-      gap: clamp(6px, 1.6vw, 12px);
-      grid-template-columns: repeat(
-        auto-fit,
-        minmax(clamp(94px, 22vmin, 136px), 1fr)
-      );
+      justify-content:center;
+      gap: clamp(6px, 1.2vw, 12px);
+      grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+    }
+
+    @media (min-width:480px){
+      .plots{ grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
+    }
+    @media (min-width:768px){
+      .plots{ grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
     }
     
     /* Клетка и внутренние элементы — относительные */
@@ -74,7 +86,7 @@
       border-radius:10px;border:2px solid #6a4d1c;
       background:rgba(155,118,47,.82);
       display:flex;align-items:center;justify-content:center;
-      font-size:clamp(12px, 2.4vw, 16px);
+      font-size: clamp(12px, 1.6vw, 16px);
     }
     .plot-actions{position:absolute;top:.35em;right:.35em;display:flex;gap:.35em;z-index:10}
     .plot-btn{width:2.2em;height:2.2em;padding:0;font-size:1.1em;border-radius:.6em;background:rgba(0,0,0,.28);color:#fff;display:flex;align-items:center;justify-content:center;border:none}
@@ -108,8 +120,21 @@
     .plot-hit { animation: plot-hit .35s ease; }
 
     /* Насекомые */
-    .bug-layer{ pointer-events:none; position: absolute; inset: 0; z-index: 5;}
-    .bug{ position:absolute; font-size:22px; filter: drop-shadow(0 1px 2px rgba(0,0,0,.25)); pointer-events: auto; cursor: pointer; transition: left 0.3s linear, top 0.3s linear;}
+    /* слой насекомых теперь ровно поверх сетки */
+    .bug-layer{
+      pointer-events:none;
+      position: absolute;
+      inset: 0;
+      z-index: 5;
+    }
+    .bug{
+      position:absolute;
+      font-size:22px;
+      filter: drop-shadow(0 1px 2px rgba(0,0,0,.25));
+      pointer-events: auto;
+      cursor: pointer;
+      transition: left 0.3s linear, top 0.3s linear;
+    }
   </style>
 </head>
 <body>
@@ -269,12 +294,35 @@
                     const activePlots = newState.plots.filter(p => p.crop);
                     if (activePlots.length > 0) {
                       if (Math.random() < 0.14 && newState.world.bugs.length < 8) {
-                        const target = activePlots[Math.floor(Math.random() * activePlots.length)]; const dir = Math.random() < 0.5 ? 'left' : 'right';
-                        newState.world.bugs.push({ id:`bug-${currentTime}-${Math.random()}`, type:'bug', x: dir==='left'?-5:105, y: 10+Math.random()*80, dir, speed: 18 + Math.random()*24, expiresAt: currentTime+30000, targetPlotId: target.id });
+                        const target = activePlots[Math.floor(Math.random() * activePlots.length)];
+                        // старт внутри поля, но близко к краям
+                        const startX = 2 + Math.random() * 96;   // 2..98%
+                        const startY = 4 + Math.random() * 92;   // 4..96%
+
+                        newState.world.bugs.push({
+                          id:`bug-${currentTime}-${Math.random()}`,
+                          type:'bug',
+                          x:startX, y:startY,
+                          dir: Math.random()<0.5 ? 'left' : 'right',
+                          speed: 18 + Math.random()*24,
+                          expiresAt: currentTime+30000,
+                          targetPlotId: target.id
+                        });
                       }
                       if (Math.random() < 0.18 && newState.world.bees.length < 10) {
-                        const target = activePlots[Math.floor(Math.random() * activePlots.length)]; const dir = Math.random() < 0.5 ? 'left' : 'right';
-                        newState.world.bees.push({ id:`bee-${currentTime}-${Math.random()}`, type:'bee', x: dir==='left'?-5:105, y: 10+Math.random()*80, dir, speed: 26 + Math.random()*30, expiresAt: currentTime+25000, targetPlotId: target.id });
+                        const target = activePlots[Math.floor(Math.random() * activePlots.length)];
+                        // пчёл аналогично:
+                        const startX = 2 + Math.random() * 96;
+                        const startY = 4 + Math.random() * 92;
+                        newState.world.bees.push({
+                          id:`bee-${currentTime}-${Math.random()}`,
+                          type:'bee',
+                          x:startX, y:startY,
+                          dir: Math.random()<0.5 ? 'left' : 'right',
+                          speed: 26 + Math.random()*30,
+                          expiresAt: currentTime+25000,
+                          targetPlotId: target.id
+                        });
                       }
                     }
                     newState.world.lastMicroTick = currentTime;
@@ -307,10 +355,19 @@
                 });
                 
                 const moveInsects = (insects, dt) => insects.map(i => {
-                    const newX = i.x + (i.dir === 'left' ? -i.speed * dt : i.speed * dt);
-                    let newDir = i.dir;
-                    if (newX > 105 || newX < -5) { if (Math.random() < 0.5) return null; newDir = newDir === 'left' ? 'right' : 'left'; }
-                    return { ...i, x: newX, dir: newDir };
+                  let newX = i.x + (i.dir === 'left' ? -i.speed * dt : i.speed * dt);
+                  // лёгкая вертикальная «дрожь», чтобы не стояли на месте
+                  let newY = i.y + (Math.random() - 0.5) * 1.5;
+
+                  // отражение от стенок области грядок
+                  if (newX > 100) { newX = 100; i.dir = 'left'; }
+                  if (newX < 0)   { newX = 0;   i.dir = 'right'; }
+
+                  // держим в пределах по Y
+                  if (newY > 98) newY = 98;
+                  if (newY < 2)  newY = 2;
+
+                  return { ...i, x: newX, y: newY };
                 }).filter(i => i && i.expiresAt > currentTime);
                 
                 newState.world.bugs = moveInsects(newState.world.bugs, dtSec / 60);
@@ -450,29 +507,36 @@
                 {hot && <div className="absolute top-2 left-2 text-center bg-red-500 text-white p-1 rounded-lg shadow-lg"><span className="hot-pulse text-lg">🔥</span><span className="block text-xs font-bold">HOT: {CROP_DATA[hot.crop].icon} x{hot.multiplier.toFixed(2)}</span><span className="block text-[10px] opacity-80">{fmtMMSS((hot.endsAt - now)/1000)}</span></div>}
                 {world.heatwaveUntil > now && <div className="absolute top-2 left-2 translate-x-[84px] text-center bg-orange-500 text-white p-1 rounded-lg shadow-lg heat-pulse"><span className="text-lg">☀️</span><span className="block text-xs font-bold">HEAT x2.25</span><span className="block text-[10px] opacity-90">{fmtMMSS((world.heatwaveUntil - now)/1000)}</span></div>}
 
-                <div className="bug-layer">
-                  {[...(world.bugs || []), ...(world.bees || [])].map(ent=>(
-                    <span key={ent.id} className="bug" style={{ left:`${ent.x}%`, top:`${ent.y}%` }} onClick={(e)=>{ e.stopPropagation(); handleInsectClick(ent.type, ent.id); }}>{ent.type==='bug'?'🐛':'🐝'}</span>
-                  ))}
-                </div>
-                
-                <div className="plots">
-                    {plots.map(plot => {
-                        const isBug = (world.bugs || []).some(b => b.targetPlotId === plot.id);
-                        const isBee = (world.bees || []).some(b => b.targetPlotId === plot.id);
-                        return (
-                        <div key={plot.id} onClick={() => handlePlotClick(plot)} className={`plot cursor-pointer transition-all duration-200 ${hitPlots[plot.id] ? 'plot-hit' : ''}`}>
-                            {plot.crop ? (<>
-                                {plot.crop.shieldUntil && now < plot.crop.shieldUntil && <span className="absolute top-1 left-1 text-base">🛡️</span>}
-                                {isBug && <span className="absolute -top-1 right-1 text-sm">-🐛</span>}
-                                {isBee && <span className="absolute -top-1 right-6 text-sm">-🐝</span>}
-                                <div className="plot-actions"><button onClick={(e) => { e.stopPropagation(); handleCareFor(plot.id, 'water'); }} className="plot-btn" title="Полить 1⚡">💧</button><button onClick={(e) => { e.stopPropagation(); handleCareFor(plot.id, 'fertilize'); }} className="plot-btn" title="Удобрить 2⚡">🌿</button><button onClick={(e) => { e.stopPropagation(); handleCareFor(plot.id, 'shield'); }} className="plot-btn" title="Защита 1⚡">🛡️</button></div>
-                                <div className={`text-[2.4em] md:text-[2.8em] ${plot.crop.stage !== plot.prevStage ? 'stage-pop' : ''}`}>{stageIcon(plot.crop.type, plot.crop.stage)}</div>
-                                {plot.crop.stage === 'Mature' ? ( <> <div className="text-xs font-bold text-green-300">x{plot.crop.harvestYield ?? calculateYield(plot.crop)}</div> <div className="absolute inset-x-0 bottom-6 text-center"><span className="inline-block text-[11px] px-2 py-0.5 rounded-full bg-black/35 text-white">Tap to harvest</span></div> </> ) : ( <div className="text-[.78em] text-white bg-black/35 rounded-full px-2 py-0.5 -mt-1 flex items-center gap-1"><span>{plot.crop.stage}</span><span className="opacity-90">•</span><span>{fmtMMSS(secondsToNextStage(plot.crop, world))}</span></div> )}
-                                <div className="absolute bottom-1 left-1 right-1 flex flex-col gap-0.5"><div className="h-1.5 bg-black/20 rounded-full"><div style={{width: `${plot.crop.water}%`}} className="h-full bg-blue-400 rounded-full"></div></div><div className="h-1.5 bg-black/20 rounded-full"><div style={{width: `${plot.crop.fertilizer}%`}} className="h-full bg-orange-400 rounded-full"></div></div></div>
-                            </>) : <div className="text-gray-400 text-xs text-center">Пусто</div>}
-                        </div>
-                    )})}
+                <div className="plots-wrap">
+                  <div className="bug-layer">
+                    {[...(world.bugs || []), ...(world.bees || [])].map(ent=>(
+                      <span
+                        key={ent.id}
+                        className="bug"
+                        style={{ left:`${ent.x}%`, top:`${ent.y}%` }}
+                        onClick={(e)=>{ e.stopPropagation(); handleInsectClick(ent.type, ent.id); }}
+                      >{ent.type==='bug'?'🐛':'🐝'}</span>
+                    ))}
+                  </div>
+
+                  <div className="plots">
+                      {plots.map(plot => {
+                          const isBug = (world.bugs || []).some(b => b.targetPlotId === plot.id);
+                          const isBee = (world.bees || []).some(b => b.targetPlotId === plot.id);
+                          return (
+                          <div key={plot.id} onClick={() => handlePlotClick(plot)} className={`plot cursor-pointer transition-all duration-200 ${hitPlots[plot.id] ? 'plot-hit' : ''}`}>
+                              {plot.crop ? (<>
+                                  {plot.crop.shieldUntil && now < plot.crop.shieldUntil && <span className="absolute top-1 left-1 text-base">🛡️</span>}
+                                  {isBug && <span className="absolute -top-1 right-1 text-sm">-🐛</span>}
+                                  {isBee && <span className="absolute -top-1 right-6 text-sm">-🐝</span>}
+                                  <div className="plot-actions"><button onClick={(e) => { e.stopPropagation(); handleCareFor(plot.id, 'water'); }} className="plot-btn" title="Полить 1⚡">💧</button><button onClick={(e) => { e.stopPropagation(); handleCareFor(plot.id, 'fertilize'); }} className="plot-btn" title="Удобрить 2⚡">🌿</button><button onClick={(e) => { e.stopPropagation(); handleCareFor(plot.id, 'shield'); }} className="plot-btn" title="Защита 1⚡">🛡️</button></div>
+                                  <div className={`text-[2.4em] md:text-[2.8em] ${plot.crop.stage !== plot.prevStage ? 'stage-pop' : ''}`}>{stageIcon(plot.crop.type, plot.crop.stage)}</div>
+                                  {plot.crop.stage === 'Mature' ? ( <> <div className="text-xs font-bold text-green-300">x{plot.crop.harvestYield ?? calculateYield(plot.crop)}</div> <div className="absolute inset-x-0 bottom-6 text-center"><span className="inline-block text-[11px] px-2 py-0.5 rounded-full bg-black/35 text-white">Tap to harvest</span></div> </> ) : ( <div className="text-[.78em] text-white bg-black/35 rounded-full px-2 py-0.5 -mt-1 flex items-center gap-1"><span>{plot.crop.stage}</span><span className="opacity-90">•</span><span>{fmtMMSS(secondsToNextStage(plot.crop, world))}</span></div> )}
+                                  <div className="absolute bottom-1 left-1 right-1 flex flex-col gap-0.5"><div className="h-1.5 bg-black/20 rounded-full"><div style={{width: `${plot.crop.water}%`}} className="h-full bg-blue-400 rounded-full"></div></div><div className="h-1.5 bg-black/20 rounded-full"><div style={{width: `${plot.crop.fertilizer}%`}} className="h-full bg-orange-400 rounded-full"></div></div></div>
+                              </>) : <div className="text-gray-400 text-xs text-center">Пусто</div>}
+                          </div>
+                      )})}
+                  </div>
                 </div>
             </div>
             <div className="bottom-panel bg-yellow-800/90 w-full p-2 text-white">
@@ -510,4 +574,5 @@
   </script>
 </body>
 </html>
+
 
