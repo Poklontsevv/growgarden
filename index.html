@@ -49,7 +49,7 @@
     .hud-resources { 
       display: flex; 
       gap: 8px;
-      margin-left: auto;
+      margin-left: 8px;
       padding-left: 12px;
     }
     .hud-events {
@@ -160,6 +160,30 @@
       display:flex;align-items:center;justify-content:center;
       font-size: clamp(2.2em, 5vw, 2.6em);
     }
+    
+    .plot-figure{
+      position: absolute;
+      left: 50%;
+      bottom: 10%;
+      transform: translateX(-50%);
+      width: 100%;
+      display: flex;
+      justify-content: center;
+      align-items: flex-end; /* важен низ */
+      pointer-events: none;
+    }
+
+    .crop-img{
+      max-width: 60%;
+      height: auto;
+      object-fit: contain;
+      display: block;
+    }
+
+    .crop-img--seed   { max-width: 42%; }
+    .crop-img--sprout { max-width: 50%; }
+    .crop-img--plant  { max-width: 56%; }
+
     .plot-actions{ display:none!important; }
     .h-1\.5{height:.4em}
 
@@ -260,66 +284,23 @@
       return `${m}:${s < 10 ? '0' : ''}${s}`;
     }
     function energySecondsToNext(energy, now) { if (energy.current >= energy.max) return 0; const intervalMs = 60000 / Math.max(0.0001, energy.regenPerMinute); const msPassedSinceLastRegen = now - energy.lastRefill; const msLeft = intervalMs - (msPassedSinceLastRegen % intervalMs); return Math.ceil(msLeft / 1000); }
+    
     const stageIcon = (type, stage) => {
-      // Единый стиль: картинка по центру, не выходит за пределы грядки
-      const imgStyle = {
-        maxWidth: '58%',   // одинаково с seed
-        height: 'auto',
-        objectFit: 'contain',
-        display: 'block'
-      };
-
+      const cls = (s) => `crop-img ${s}`;
       if (stage === 'Seed') {
-        return (
-          <img
-            src="https://raw.githubusercontent.com/Poklontsevv/growgarden/main/seed.png"
-            alt="Seed"
-            style={imgStyle}
-          />
-        );
+        return <img src="https://raw.githubusercontent.com/Poklontsevv/growgarden/main/seed.png" alt="Seed" className={cls('crop-img--seed')} />;
       }
-
-      // Голубика
       if (type === 'Blueberry') {
-        if (stage === 'Sprout') {
-          return (
-            <img
-              src="https://raw.githubusercontent.com/Poklontsevv/growgarden/main/blueberry_sprout.png"
-              alt="Blueberry sprout"
-              style={imgStyle}
-            />
-          );
-        }
-        return (
-          <img
-            src="https://raw.githubusercontent.com/Poklontsevv/growgarden/main/blueberry_plant.png"
-            alt="Blueberry plant"
-            style={imgStyle}
-          />
-        );
+        return stage === 'Sprout'
+          ? <img src="https://raw.githubusercontent.com/Poklontsevv/growgarden/main/blueberry_sprout.png" alt="Blueberry sprout" className={cls('crop-img--sprout')} />
+          : <img src="https://raw.githubusercontent.com/Poklontsevv/growgarden/main/blueberry_plant.png"  alt="Blueberry plant"  className={cls('crop-img--plant')} />;
       }
-
-      // Морковь
       if (type === 'Carrot') {
-        if (stage === 'Sprout') {
-          return (
-            <img
-              src="https://raw.githubusercontent.com/Poklontsevv/growgarden/main/carrot_sprout.png"
-              alt="Carrot sprout"
-              style={imgStyle}
-            />
-          );
-        }
-        return (
-          <img
-            src="https://raw.githubusercontent.com/Poklontsevv/growgarden/main/carrot_plant.png"
-            alt="Carrot plant"
-            style={imgStyle}
-          />
-        );
+        return stage === 'Sprout'
+          ? <img src="https://raw.githubusercontent.com/Poklontsevv/growgarden/main/carrot_sprout.png"   alt="Carrot sprout" className={cls('crop-img--sprout')} />
+          : <img src="https://raw.githubusercontent.com/Poklontsevv/growgarden/main/carrot_plant.png"    alt="Carrot plant"  className={cls('crop-img--plant')} />;
       }
-
-      // Остальные культуры — как раньше
+      // Остальные культуры — как было
       return stage === 'Sprout' ? '🌿' : CROP_DATA[type].icon;
     };
     
@@ -712,8 +693,10 @@
                                   {plot.crop.shieldUntil && now < plot.crop.shieldUntil && (<span className="absolute top-1 left-1 text-base z-10">🛡️</span>)}
                                   {isBug && <span className="absolute -top-1 right-1 text-sm">-🐛</span>}
                                   
-                                  <div className={`flex items-center justify-center h-full w-full ${plot.crop.stage !== plot.prevStage ? 'stage-pop' : ''}`}>
-                                    {stageIcon(plot.crop.type, plot.crop.stage)}
+                                  <div className={`h-full w-full ${plot.crop.stage !== plot.prevStage ? 'stage-pop' : ''}`}>
+                                    <div className="plot-figure">
+                                      {stageIcon(plot.crop.type, plot.crop.stage)}
+                                    </div>
                                   </div>
 
                                   {plot.crop.stage === 'Mature' ? (
