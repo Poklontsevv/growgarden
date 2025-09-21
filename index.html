@@ -151,38 +151,40 @@
     }
     
     .plot{
-      position:relative;
-      aspect-ratio:1/1;
+      position: relative;
+      aspect-ratio: 1/1;
       background-image: url('https://raw.githubusercontent.com/Poklontsevv/growgarden/main/garden_bed%202.png');
       background-size: contain;
       background-repeat: no-repeat;
       background-position: center;
-      display:flex;align-items:center;justify-content:center;
+      display: flex; align-items: center; justify-content: center;
       font-size: clamp(2.2em, 5vw, 2.6em);
+      overflow: hidden;
     }
     
     .plot-figure{
       position: absolute;
       left: 50%;
-      bottom: 10%;
+      bottom: 14%;
       transform: translateX(-50%);
       width: 100%;
+      height: 86%;
       display: flex;
       justify-content: center;
-      align-items: flex-end; /* важен низ */
+      align-items: flex-end;
       pointer-events: none;
     }
 
     .crop-img{
-      max-width: 60%;
+      display: block;
       height: auto;
       object-fit: contain;
-      display: block;
+      max-height: 72%;
     }
 
-    .crop-img--seed   { max-width: 42%; }
-    .crop-img--sprout { max-width: 50%; }
-    .crop-img--plant  { max-width: 56%; }
+    .crop-img--seed   { max-width: 40%; }
+    .crop-img--sprout { max-width: 46%; }
+    .crop-img--plant  { max-width: 48%; }
 
     .plot-actions{ display:none!important; }
     .h-1\.5{height:.4em}
