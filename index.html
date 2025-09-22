@@ -52,6 +52,7 @@
       margin-left: 8px;
       padding-left: 12px;
       align-items: center;
+      flex-wrap: wrap;
     }
     .hud-events {
       position: absolute;
@@ -97,7 +98,7 @@
       background-position:center;
       flex:1 1 auto;
       padding: 12px;
-      padding-top: calc(var(--hud-h) + max(8px, env(safe-area-inset-top)));
+      padding-top: calc(var(--hud-h) + max(8px, env(safe-area-inset-top)) + 24px);
       padding-bottom: calc(var(--panel-h) + max(10px, env(safe-area-inset-bottom)));
     }
 
@@ -256,9 +257,11 @@
       pointer-events:auto;
       cursor:pointer;
       /* расширяем хитбокс без визуального увеличения */
-      padding: 16px;            /* зона клика вокруг спрайта */
-      margin-left: -16px;
-      margin-top: -16px;
+      padding: 22px;            /* зона клика вокруг спрайта */
+      margin-left: -22px;
+      margin-top: -22px;
+      touch-action: none;                   /* не перехватывать скролл/зум */
+      -webkit-tap-highlight-color: transparent;
     }
     
     /* маленькие UI-иконки в кнопках/лейблах */
@@ -275,6 +278,50 @@
       display: block;
       object-fit: contain;
       pointer-events: none;      /* чтобы клик ловил .bug */
+    }
+
+    .floater {
+      position: fixed;
+      z-index: 60;
+      font-weight: 800;
+      font-size: 14px;
+      pointer-events: none;
+      transform: translate(-50%, -50%);
+      animation: floater-up 900ms ease-out forwards;
+      text-shadow: 0 1px 2px rgba(0,0,0,.35);
+      color: white;
+    }
+    @keyframes floater-up {
+      0%   { opacity: 0; transform: translate(-50%, -10%) scale(.9); }
+      15%  { opacity: 1; transform: translate(-50%, -24%) scale(1); }
+      100% { opacity: 0; transform: translate(-50%, -70%) scale(1.05); }
+    }
+    .badge {
+      margin-left: 6px;
+      padding: 1px 6px;
+      border-radius: 999px;
+      background: rgba(0,0,0,.35);
+      font-size: 11px;
+      display: inline-block;
+    }
+    .coins-bounce { animation: coins-bounce 350ms ease-out; }
+    @keyframes coins-bounce {
+      0% { transform: scale(1); }
+      50% { transform: scale(1.12); }
+      100% { transform: scale(1); }
+    }
+    .plot.plot--attacked::after {
+      content: '';
+      position: absolute; inset: -4px; border-radius: 14px;
+      background: radial-gradient(circle, rgba(255,0,0,0.35) 0%, rgba(255,0,0,0) 70%);
+      animation: pulse-halo 1.05s ease-in-out infinite;
+      z-index: -1;
+    }
+    .plot-attack-icons {
+      position: absolute; top: 2px; right: 4px;
+      font-size: 12px; font-weight: 700; color: #fff;
+      background: rgba(0,0,0,.4); padding: 2px 6px; border-radius: 999px;
+      z-index: 5;
     }
   </style>
 </head>
@@ -301,12 +348,11 @@
     const Ticks = { GAME: 1000, WEATHER: 15 * 60 * 1000, MARKET: 5 * 60 * 1000, ORDERS: 10 * 60 * 1000, SHOP: 5 * 60 * 1000 };
     const OFFLINE_CAP_HOURS = 3;
     
-    // Тюнинг насекомых: легко подкручивается без перегона по всему коду
     const INSECT_TUNING = {
-      sizeMinPct: 10,   // раньше 5
-      sizeMaxPct: 18,   // раньше 14
-      speedScale: 0.75, // 0.75 = на 25% медленнее (увеличить/уменьшить по вкусу)
-      clickPadding: 16  // хитбокс вокруг спрайта, было 12
+      sizeMinPct: 20,
+      sizeMaxPct: 36,
+      speedScale: 0.45,
+      clickPadding: 22
     };
 
     const DAMAGE_TUNING = {
@@ -315,10 +361,10 @@
     };
 
     const COMPENSATION = {
-      bugHealPct: 5,                    // +5% к более просевшей шкале
-      beetleBuff: { mulPerStack: 0.10, durationMs: 10000, maxStacks: 2 }, // +10% x до 2-х стаков
-      rareCoinChance: 0.10,
-      rareEnergyChance: 0.05
+      bugHealPct: 5,
+      beetleBuff: { mulPerStack: 0.10, durationMs: 10000, maxStacks: 2 },
+      rareCoinChance: 0.20,
+      rareEnergyChance: 0.12
     };
 
     const rand = (min, max) => min + Math.random() * (max - min);
@@ -333,20 +379,16 @@
     }
     function energySecondsToNext(energy, now) { if (energy.current >= energy.max) return 0; const intervalMs = 60000 / Math.max(0.0001, energy.regenPerMinute); const msPassedSinceLastRegen = now - energy.lastRefill; const msLeft = intervalMs - (msPassedSinceLastRegen % intervalMs); return Math.ceil(msLeft / 1000); }
     
-    // Сколько реально посажено
     const plantedCount = (state) =>
       state.plots.reduce((acc, p) => acc + (p.crop ? 1 : 0), 0);
 
-    // Вычислить y в процентах в пределах видимой части play-area
     const visibleYPct = (paEl) => {
-      if (!paEl) return 50; // фолбэк
+      if (!paEl) return 50;
       const { scrollTop, clientHeight, scrollHeight } = paEl;
-      // выбираем случайный пиксель по вертикали в видимой области
       const yPx = scrollTop + Math.random() * clientHeight;
       return clamp((yPx / scrollHeight) * 100, 2, 98);
     };
 
-    // Иконки ухода (raw-ссылки, чтобы грузились как картинки)
     const ICONS = {
       water:      "https://raw.githubusercontent.com/Poklontsevv/growgarden/main/watering.png",
       fertilizer: "https://raw.githubusercontent.com/Poklontsevv/growgarden/main/fertilizer%202.png",
@@ -403,24 +445,19 @@
     function rollShopStock() { const stock = {}; const now = Date.now(); const weights = { common: 1.0, uncommon: 0.6, rare: 0.3, epic: 0.15 }; Object.entries(CROP_DATA).forEach(([key, d]) => { const appear = Math.random() < (weights[d.rarity] ?? 1); stock[key] = { available: appear, qty: appear ? (d.stockPerRefresh ?? 5) : 0 }; }); return { stock, nextRefresh: now + Ticks.SHOP }; }
     
     function growthSpeedMul(crop, world, now){
-      // базовое
       let m = (world.weather==='Sunny'?1:0.9);
       const red = (crop.water<20 || crop.fertilizer<20) ? 0.5 : 1;
       m *= red;
 
-      // фриз от жука
       if (crop.frozenUntil && now < crop.frozenUntil) m *= 0;
 
-      // бафф роста от убийства жука
       if (crop.growthBuffUntil && now < crop.growthBuffUntil) {
         const stacks = clamp(crop.growthBuffStacks || 0, 0, COMPENSATION.beetleBuff.maxStacks);
         m *= (1 + COMPENSATION.beetleBuff.mulPerStack * stacks);
       } else {
-        // бафф закончился — сбросить стаки
         if (crop.growthBuffStacks) crop.growthBuffStacks = 0;
       }
 
-      // обычные бусты за уход
       if (now < crop.waterBoostUntil) m *= 1.25;
       if (now < crop.fertBoostUntil)  m *= 1.15;
       return m;
@@ -470,9 +507,9 @@
           state.inv.items = state.inv.items ?? {Fertilizer:0, PestControl:0};
           state.world = state.world ?? {};
           state.world.bugs = state.world.bugs ?? [];
-          state.world.beetles = state.world.beetles ?? state.world.bees ?? []; // Migration
+          state.world.beetles = state.world.beetles ?? state.world.bees ?? [];
           state.world.bugAttack = state.world.bugAttack ?? { phase:'idle', announceUntil:0, endsAt:0, nextSpawnAt:0, cooldownUntil:0 };
-          state.world.beetleAttack = state.world.beetleAttack ?? state.world.beeAttack ?? { phase:'idle', announceUntil:0, endsAt:0, nextSpawnAt:0, cooldownUntil:0 }; // Migration
+          state.world.beetleAttack = state.world.beetleAttack ?? state.world.beeAttack ?? { phase:'idle', announceUntil:0, endsAt:0, nextSpawnAt:0, cooldownUntil:0 };
           state.world.globalEventLockUntil = state.world.globalEventLockUntil ?? 0;
           state.world.beetleRollbackCD = state.world.beetleRollbackCD ?? {};
 
@@ -489,6 +526,15 @@
       const [selectedSeed, setSelectedSeed] = useState('Carrot');
       const [toast, setToast] = useState(null);
       const [now, setNow] = useState(Date.now());
+      const [floaters, setFloaters] = useState([]);
+      const [coinsAnimKey, setCoinsAnimKey] = useState(0);
+      const [combo, setCombo] = useState({ lastAt: 0, streak: 0 });
+
+      const addFloater = (x, y, text) => {
+        const id = Math.random().toString(36).slice(2);
+        setFloaters(fs => [...fs, { id, x, y, text }]);
+        setTimeout(() => setFloaters(fs => fs.filter(f => f.id !== id)), 900);
+      };
 
       function getPlotUnderXYPercent(xPct, yPct) {
         const layer = document.querySelector('.bug-layer');
@@ -613,9 +659,9 @@
                         const y = visibleYPct(playAreaRef.current);
                         const isFast = i < fastQuota;
                         const base = (type === 'bug')
-                          ? (isFast ? rand(24, 34) : rand(8, 18))
-                          : (isFast ? rand(28, 40) : rand(10, 22));
-                        const speed = base * INSECT_TUNING.speedScale; // замедляем на процент
+                          ? (isFast ? rand(16, 24) : rand(6, 12))
+                          : (isFast ? rand(18, 26) : rand(7, 14));
+                        const speed = base * INSECT_TUNING.speedScale;
                         const x = (type === 'bug') ? -12 : 112;
                         const vx = (type === 'bug') ? +speed : -speed;
 
@@ -636,7 +682,6 @@
               handleAttack('bug');
               handleAttack('beetle');
 
-              // Insect Damage Logic
               const beetleCD = newState.world.beetleRollbackCD || (newState.world.beetleRollbackCD = {});
               const lists = [
                 { type: 'bug', list: newState.world.bugs },
@@ -646,7 +691,6 @@
                 for (const ent of L.list) {
                   const pid = getPlotUnderXYPercent(ent.x, ent.y);
 
-                  // 1) если насекомое НЕ над грядкой
                   if (!pid) {
                     if (L.type === 'beetle' && ent.currentPlotId && ent.dwellOnThisPlotMs >= DAMAGE_TUNING.beetle.minDwellForRollbackSec*1000) {
                       const plotId = ent.currentPlotId;
@@ -667,13 +711,11 @@
                     }
                     ent.lastPlotId = ent.currentPlotId;
                     ent.currentPlotId = null;
-                    ent.dwellOnThisPlotMs = 0; // обнуляем счётчик для текущей грядки
+                    ent.dwellOnThisPlotMs = 0;
                     continue;
                   }
-
-                  // 2) насекомое над грядкой
+                  
                   ent.lastPlotId = pid;
-                  // если новая грядка — сбросить локальный таймер
                   if (ent.currentPlotId !== pid) {
                     ent.currentPlotId = pid;
                     ent.dwellOnThisPlotMs = 0;
@@ -684,7 +726,6 @@
                   const plot = newState.plots[pIdx];
                   if (!plot.crop) continue;
 
-                  // глобальный и локальный на этой грядке таймеры простоя
                   ent.dwellOnPlotMs = (ent.dwellOnPlotMs || 0) + 1000;
                   ent.dwellOnThisPlotMs = (ent.dwellOnThisPlotMs || 0) + 1000;
 
@@ -711,6 +752,21 @@
                       } else { if (plot.crop.stage !== 'Mature') { plot.crop.stage = 'Mature'; plot.crop.harvestYield = calculateYield(plot.crop); } }
                   }
               });
+
+              const attackedMap = {};
+              for (const ent of newState.world.bugs) {
+                if (ent.currentPlotId) {
+                  attackedMap[ent.currentPlotId] ||= { bug:0, beetle:0 };
+                  attackedMap[ent.currentPlotId].bug++;
+                }
+              }
+              for (const ent of newState.world.beetles) {
+                if (ent.currentPlotId) {
+                  attackedMap[ent.currentPlotId] ||= { bug:0, beetle:0 };
+                  attackedMap[ent.currentPlotId].beetle++;
+                }
+              }
+              newState.world.attackedMap = attackedMap;
               
               newState.lastActiveAt = currentNow;
               return newState;
@@ -722,13 +778,24 @@
       const spendEnergy = (amount) => { if (gameState.eco.energy.current < amount) { showToast("Недостаточно энергии! ⚡", true); return false; } setGameState(prev => ({ ...prev, eco: { ...prev.eco, energy: { ...prev.eco.energy, current: prev.eco.energy.current - amount } } })); return true; }
       const handlePlotClick = (plot) => { if (plot.crop?.stage === 'Mature') handleHarvest(plot.id); else if (!plot.crop) handlePlant(plot.id); }
       
-      const handleInsectClick = (kind, id) => {
-        // не тратим энергию за уничтожение насекомых
+      const handleInsectClick = (evt, kind, id) => {
         haptic('success');
-        let dropMsg = null;
+        const tapX = evt.clientX;
+        const tapY = evt.clientY;
+        
+        let localComboMult = 1;
+        setCombo(prev => {
+          const nowT = Date.now();
+          const within = nowT - prev.lastAt <= 1200;
+          const nextStreak = within ? prev.streak + 1 : 1;
+          localComboMult = Math.min(1 + Math.floor((nextStreak - 1) / 2), 3);
+          return { lastAt: nowT, streak: nextStreak };
+        });
+
+        let gainedCoins = 0, gainedEnergy = 0;
         setGameState(prev => {
           const ns = JSON.parse(JSON.stringify(prev));
-          const normalized = (kind === 'bee') ? 'beetle' : kind; // миграция
+          const normalized = (kind === 'bee') ? 'beetle' : kind;
           const listKey = normalized === 'bug' ? 'bugs' : 'beetles';
           const list = ns.world[listKey] || [];
           const ent = list.find(i => i.id === id);
@@ -747,7 +814,6 @@
                   crop[target] = clamp(crop[target] + COMPENSATION.bugHealPct, 0, 100);
                 } else {
                   const nowTs = Date.now();
-                  // мгновенно снимаем ❄️
                   crop.frozenUntil = 0;
 
                   if ((crop.growthBuffStacks || 0) < COMPENSATION.beetleBuff.maxStacks) {
@@ -759,22 +825,37 @@
             }
           }
 
-          if (Math.random() < COMPENSATION.rareCoinChance) { ns.eco.coins += 1; dropMsg = (dropMsg ? dropMsg + ' · ' : '') + '+1💰'; }
-          if (Math.random() < COMPENSATION.rareEnergyChance) { ns.eco.energy.current = Math.min(ns.eco.energy.max, ns.eco.energy.current + 1); dropMsg = (dropMsg ? dropMsg + ' · ' : '') + '+1⚡'; }
+          if (Math.random() < COMPENSATION.rareCoinChance) { ns.eco.coins += 1; gainedCoins += 1; }
+          if (Math.random() < COMPENSATION.rareEnergyChance) {
+            ns.eco.energy.current = Math.min(ns.eco.energy.max, ns.eco.energy.current + 1);
+            gainedEnergy += 1;
+          }
+
+          if (gainedCoins > 0) setCoinsAnimKey(k => k + 1);
 
           const todayKey = new Date().toDateString();
           ns.world.insectDaily ||= { day: todayKey, kills: 0, milestones: {10:false,25:false,50:false} };
           if (ns.world.insectDaily.day !== todayKey) ns.world.insectDaily = { day: todayKey, kills: 0, milestones: {10:false,25:false,50:false} };
           ns.world.insectDaily.kills += 1;
           const m = ns.world.insectDaily.milestones;
-          const grant = (amt)=> ns.eco.coins += amt;
+          const grant = (amt)=> { ns.eco.coins += amt; if (amt > 0) setCoinsAnimKey(k => k + 1); };
           if (!m[10] && ns.world.insectDaily.kills >= 10) { m[10]=true; grant(10); }
           if (!m[25] && ns.world.insectDaily.kills >= 25) { m[25]=true; grant(30); }
           if (!m[50] && ns.world.insectDaily.kills >= 50) { m[50]=true; grant(80); }
 
           return ns;
         });
-        showToast((kind === 'bug' ? 'Уничтожена!' : 'Прогнан!') + (dropMsg ? ` ${dropMsg}` : ''));
+
+        let floaterText = (kind === 'bug' ? '+3💰' : '+4💰');
+        if (gainedCoins) floaterText = `+${3 + gainedCoins}💰`;
+        if (gainedEnergy) floaterText += ' +⚡';
+        
+        let comboHtml = '';
+        if (localComboMult > 1) {
+            comboHtml = ` <span class="badge">x${localComboMult}</span>`;
+        }
+        
+        addFloater(tapX, tapY, <span dangerouslySetInnerHTML={{ __html: floaterText + comboHtml }} />);
       }
 
       const handlePlant = (plotId) => {
@@ -852,6 +933,7 @@
           haptic('success');
           setGameState(prev => ({...prev, eco: {...prev.eco, coins: prev.eco.coins + (price * qty)}, inv: {...prev.inv, raw: {...prev.inv.raw, [item]: have - qty}} }));
           showToast(`Продано на ${price * qty}💰`);
+          setCoinsAnimKey(k => k + 1);
       }
       
       const handleFulfillOrder = (order) => {
@@ -859,6 +941,7 @@
         haptic('success');
         setGameState(prev=>{ const ns = JSON.parse(JSON.stringify(prev)); order.requires.forEach(req => { ns.inv.raw[req.item] -= req.qty; }); ns.eco.coins += order.rewardCoins; if (order.rewardGems) ns.eco.gems += order.rewardGems; ns.orders = ns.orders.filter(o=>o.id!==order.id); return ns; });
         showToast(`Заказ выполнен! +${order.rewardCoins}💰`);
+        setCoinsAnimKey(k => k + 1);
       };
       
       const { eco, inv, plots, world, shop, upgrades } = gameState;
@@ -867,14 +950,24 @@
       return (
         <React.Fragment>
           {toast && <div className="toast bg-blue-500 text-white px-6 py-2 rounded-full shadow-lg animate-bounce">{toast}</div>}
+          {floaters.map(f => (
+            <div key={f.id} className="floater" style={{ left: f.x, top: f.y }}>
+              {f.text}
+            </div>
+          ))}
           
           <div className="hud">
             <div className="hud-events">
               {hot && <div className="event-card hot-pulse"><span className="font-bold">🔥 HOT: {CROP_DATA[hot.crop].icon} x{hot.multiplier.toFixed(2)}</span><span className="block text-[10px] opacity-80">{fmtMMSS((hot.endsAt - now)/1000)}</span></div>}
               {world.heatwaveUntil > now && <div className="event-card heat-pulse"><span className="font-bold">☀️ HEAT</span><span className="block text-[10px] opacity-90">{fmtMMSS((world.heatwaveUntil - now)/1000)}</span></div>}
+              {world.attackedMap && Object.keys(world.attackedMap).length > 0 && (
+                <div className="event-card">
+                  Грядки под атакой: {Object.keys(world.attackedMap).length}
+                </div>
+              )}
             </div>
             <div className="hud-resources">
-              <div className="bg-yellow-400 text-yellow-900 font-bold px-3 py-1 rounded-full shadow-md">💰 {eco.coins}</div>
+              <div className={`bg-yellow-400 text-yellow-900 font-bold px-3 py-1 rounded-full shadow-md ${coinsAnimKey ? 'coins-bounce' : ''}`}>💰 {eco.coins}</div>
               <div className="bg-purple-400 text-purple-900 font-bold px-3 py-1 rounded-full shadow-md">💎 {eco.gems}</div>
               <div className="bg-blue-300 text-blue-900 font-bold px-3 py-1 rounded-full shadow-md leading-tight flex flex-col items-end">
                 <span>⚡ {eco.energy.current}/{eco.energy.max}</span>
@@ -903,6 +996,12 @@
                   </span>
                 </div>
               )}
+               {gameState.world?.insectDaily && (
+                <div className="bg-black/30 text-white px-2 py-1 rounded-full text-[11px]">
+                  🐞 Сегодня: {gameState.world.insectDaily.kills}
+                  <span className="opacity-70"> · цели: 10/25/50</span>
+                </div>
+              )}
             </div>
           </div>
 
@@ -911,7 +1010,12 @@
                   <div className="plots-wrap">
                     <div className="bug-layer">
                       {[...(world.bugs || []), ...(world.beetles || [])].map(ent => (
-                        <span key={ent.id} className="bug" style={{ left: `${ent.x}%`, top: `${ent.y}%`, width: `${ent.size}%`, height: `${ent.size}%` }} onClick={(e) => { e.stopPropagation(); handleInsectClick(ent.type, ent.id); }}>
+                        <span
+                          key={ent.id}
+                          className="bug"
+                          style={{ left: `${ent.x}%`, top: `${ent.y}%`, width: `${ent.size}%`, height: `${ent.size}%` }}
+                          onPointerDown={(e) => { e.stopPropagation(); handleInsectClick(e, ent.type, ent.id); }}
+                        >
                           {ent.type === 'bug'
                              ? (<img className="bug-sprite" alt="caterpillar" src="https://raw.githubusercontent.com/Poklontsevv/growgarden/main/caterpillar.png" />)
                              : (<img className="beetle-sprite" alt="beetle" src={ENEMY_IMG_BEETLE} />)}
@@ -920,7 +1024,10 @@
                     </div>
 
                     <div className="plots">
-                      {plots.map(plot => (
+                      {plots.map(plot => {
+                        const atk = world.attackedMap?.[plot.id];
+                        const isAttacked = !!atk && ((atk.bug||0)+(atk.beetle||0) > 0);
+                        return (
                           <div key={plot.id} className="plot-cell" data-plot-id={plot.id}>
                             {plot.crop && plot.crop.stage !== 'Mature' && (
                               <div className="plot-toolbar">
@@ -947,7 +1054,18 @@
                               </div>
                             )}
 
-                            <div onClick={() => handlePlotClick(plot)} className={`plot cursor-pointer transition-all duration-200 ${world.heatwaveUntil > now && plot.crop ? 'plot--heated' : ''} ${hot?.crop === plot.crop?.type ? 'plot--hot' : ''}`}>
+                            <div
+                              onClick={() => handlePlotClick(plot)}
+                              className={`plot cursor-pointer transition-all duration-200
+                                ${world.heatwaveUntil > now && plot.crop ? 'plot--heated' : ''}
+                                ${hot?.crop === plot.crop?.type ? 'plot--hot' : ''}
+                                ${isAttacked ? 'plot--attacked' : ''}`}
+                            >
+                               {isAttacked && (
+                                <div className="plot-attack-icons">
+                                  {atk.bug ? `🐛x${atk.bug} ` : ''}{atk.beetle ? `🪲x${atk.beetle}` : ''}
+                                </div>
+                              )}
                               {plot.crop && plot.crop.stage !== 'Mature' && (
                                 <div className="plot-timer">
                                   {fmtMMSS(secondsToNextStage(plot.crop, world))}
@@ -968,7 +1086,7 @@
                               ) : ( <div className="text-gray-400 text-xs text-center">Пусто</div> )}
                             </div>
                           </div>
-                        ))}
+                        )})}
                     </div>
                   </div>
               </div>
