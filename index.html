@@ -56,7 +56,7 @@
     }
     .hud-events {
       position: absolute;
-      top: max(8px, env(safe-area-inset-top));
+      top: calc(max(8px, env(safe-area-inset-top)) + 36px);
       left: 12px;
       z-index: 38;
       display: flex;
@@ -353,20 +353,33 @@
     const INSECT_TUNING = {
       sizeMinPct: 20,
       sizeMaxPct: 36,
-      speedScale: 0.45,
+      speedScale: 0.40,
       clickPadding: 22
     };
+
+    const INSECT_CAP = { bug: 8, beetle: 6 };
 
     const DAMAGE_TUNING = {
       bug: { waterPerSec: 3, fertPerSec: 2, shieldMultiplier: 0.5 },
       beetle: { freezeExtendSec: 1.2, leaveRollback: 0.04, minDwellForRollbackSec: 2, rollbackCooldownSec: 5 }
     };
 
+    const INSECT_LOOT = {
+      coinChance: 0.25,
+      energyChance: 0.08,
+      gemChance: 0.015,
+      coinPerKillMin: 1,
+      coinPerKillMax: 2,
+      budget: {
+        coinsMin: 4, coinsMax: 8,
+        energyMin: 2, energyMax: 4,
+        gemsMin: 0, gemsMax: 1
+      }
+    };
+
     const COMPENSATION = {
       bugHealPct: 5,
       beetleBuff: { mulPerStack: 0.10, durationMs: 10000, maxStacks: 2 },
-      rareCoinChance: 0.20,
-      rareEnergyChance: 0.12
     };
 
     const rand = (min, max) => min + Math.random() * (max - min);
@@ -548,7 +561,6 @@
       const [now, setNow] = useState(Date.now());
       const [floaters, setFloaters] = useState([]);
       const [coinsAnimKey, setCoinsAnimKey] = useState(0);
-      const [combo, setCombo] = useState({ lastAt: 0, streak: 0 });
 
       const addFloater = (x, y, text) => {
         const id = Math.random().toString(36).slice(2);
@@ -658,41 +670,49 @@
                   case 'announce': {
                     if (currentNow >= A.announceUntil) {
                       A.phase = 'active';
-                      A.endsAt = currentNow + rand(8000, 20000);
+                      A.endsAt = currentNow + rand(25000, 45000);
                       A.nextSpawnAt = currentNow;
+                      A.loot = {
+                        coinsLeft: randInt(INSECT_LOOT.budget.coinsMin, INSECT_LOOT.budget.coinsMax),
+                        energyLeft: randInt(INSECT_LOOT.budget.energyMin, INSECT_LOOT.budget.energyMax),
+                        gemsLeft: randInt(INSECT_LOOT.budget.gemsMin, INSECT_LOOT.budget.gemsMax),
+                      };
                     }
                     break;
                   }
                   case 'active': {
                     if (currentNow >= A.endsAt) {
                       A.phase = 'idle';
-                      A.cooldownUntil = currentNow + rand(25000, 60000);
+                      A.cooldownUntil = currentNow + rand(50000, 120000);
                       const bigGap = Math.random() < 0.5;
-                      newState.world.globalEventLockUntil = currentNow + (bigGap ? rand(90000, 240000) : rand(12000, 35000));
+                      newState.world.globalEventLockUntil = currentNow + (bigGap ? rand(120000, 300000) : rand(20000, 45000));
                     } else if (currentNow >= A.nextSpawnAt) {
                       const list = newState.world[listKey];
-                      const count = randInt(1, 4);
-                      const fastQuota = Math.min(2, randInt(1, 2));
+                      if (list.length < INSECT_CAP[type]) {
+                        const freeSlots = Math.max(0, INSECT_CAP[type] - list.length);
+                        const wave = Math.min(freeSlots, randInt(1, 2));
+                        const fastQuota = randInt(0, 1);
 
-                      for (let i = 0; i < count; i++) {
-                        const size = rand(INSECT_TUNING.sizeMinPct, INSECT_TUNING.sizeMaxPct);
-                        const y = visibleYPct(playAreaRef.current);
-                        const isFast = i < fastQuota;
-                        const base = (type === 'bug')
-                          ? (isFast ? rand(16, 24) : rand(6, 12))
-                          : (isFast ? rand(18, 26) : rand(7, 14));
-                        const speed = base * INSECT_TUNING.speedScale;
-                        const x = (type === 'bug') ? -12 : 112;
-                        const vx = (type === 'bug') ? +speed : -speed;
+                        for (let i = 0; i < wave; i++) {
+                          const size = rand(INSECT_TUNING.sizeMinPct, INSECT_TUNING.sizeMaxPct);
+                          const y = visibleYPct(playAreaRef.current);
+                          const isFast = i < fastQuota;
+                          const base = (type === 'bug')
+                            ? (isFast ? rand(14, 20) : rand(5, 10))
+                            : (isFast ? rand(15, 22) : rand(6, 12));
+                          const speed = base * INSECT_TUNING.speedScale;
+                          const x = (type === 'bug') ? -12 : 112;
+                          const vx = (type === 'bug') ? +speed : -speed;
 
-                        list.push({
-                          id: `${currentNow}-${i}-${Math.random()}`, type, x, y, vx, vy: 0, size,
-                          expiresAt: currentNow + rand(7000, 12000),
-                          dwellOnPlotMs: 0, lastPlotId: null,
-                          currentPlotId: null, dwellOnThisPlotMs: 0
-                        });
+                          list.push({
+                            id: `${currentNow}-${i}-${Math.random()}`, type, x, y, vx, vy: 0, size,
+                            expiresAt: currentNow + rand(7000, 12000),
+                            dwellOnPlotMs: 0, lastPlotId: null,
+                            currentPlotId: null, dwellOnThisPlotMs: 0
+                          });
+                        }
                       }
-                      A.nextSpawnAt = currentNow + rand(600, 1600);
+                      A.nextSpawnAt = currentNow + rand(1400, 3800);
                     }
                     break;
                   }
@@ -798,30 +818,42 @@
       const spendEnergy = (amount) => { if (gameState.eco.energy.current < amount) { showToast("Недостаточно энергии! ⚡", true); return false; } setGameState(prev => ({ ...prev, eco: { ...prev.eco, energy: { ...prev.eco.energy, current: prev.eco.energy.current - amount } } })); return true; }
       const handlePlotClick = (plot) => { if (plot.crop?.stage === 'Mature') handleHarvest(plot.id); else if (!plot.crop) handlePlant(plot.id); }
       
+      function previewInsectLoot(kind, state) {
+        const nodeKey = kind === 'bug' ? 'bugAttack' : 'beetleAttack';
+        const A = state.world?.[nodeKey];
+        if (!A?.loot) return { coins: 0, energy: 0, gems: 0 };
+
+        let coins = 0, energy = 0, gems = 0;
+
+        if (A.loot.coinsLeft > 0 && Math.random() < INSECT_LOOT.coinChance) {
+          const drop = randInt(INSECT_LOOT.coinPerKillMin, INSECT_LOOT.coinPerKillMax);
+          coins = Math.min(drop, A.loot.coinsLeft);
+        }
+        if (A.loot.energyLeft > 0 && Math.random() < INSECT_LOOT.energyChance) {
+          energy = 1;
+        }
+        if (A.loot.gemsLeft > 0 && Math.random() < INSECT_LOOT.gemChance) {
+          gems = 1;
+        }
+        return { coins, energy, gems };
+      }
+
       const handleInsectClick = (evt, kind, id) => {
         haptic('success');
         const tapX = evt.clientX;
         const tapY = evt.clientY;
-        
-        let localComboMult = 1;
-        setCombo(prev => {
-          const nowT = Date.now();
-          const within = nowT - prev.lastAt <= 1200;
-          const nextStreak = within ? prev.streak + 1 : 1;
-          localComboMult = Math.min(1 + Math.floor((nextStreak - 1) / 2), 3);
-          return { lastAt: nowT, streak: nextStreak };
-        });
 
-        let gainedCoins = 0, gainedEnergy = 0;
+        const normalized = (kind === 'bee') ? 'beetle' : kind;
+        const lootPreview = previewInsectLoot(normalized, gameState);
+
         setGameState(prev => {
           const ns = JSON.parse(JSON.stringify(prev));
-          const normalized = (kind === 'bee') ? 'beetle' : kind;
           const listKey = normalized === 'bug' ? 'bugs' : 'beetles';
           const list = ns.world[listKey] || [];
           const ent = list.find(i => i.id === id);
           let pid = null;
           if (ent) pid = getPlotUnderXYPercent(ent.x, ent.y);
-          
+
           ns.world[listKey] = list.filter(i => i.id !== id);
 
           if (pid) {
@@ -835,7 +867,6 @@
                 } else {
                   const nowTs = Date.now();
                   crop.frozenUntil = 0;
-
                   if ((crop.growthBuffStacks || 0) < COMPENSATION.beetleBuff.maxStacks) {
                     crop.growthBuffStacks = (crop.growthBuffStacks || 0) + 1;
                   }
@@ -845,38 +876,28 @@
             }
           }
 
-          if (Math.random() < COMPENSATION.rareCoinChance) { ns.eco.coins += 1; gainedCoins += 1; }
-          if (Math.random() < COMPENSATION.rareEnergyChance) {
-            ns.eco.energy.current = Math.min(ns.eco.energy.max, ns.eco.energy.current + 1);
-            gainedEnergy += 1;
+          const A = ns.world[normalized === 'bug' ? 'bugAttack' : 'beetleAttack'];
+          if (A?.loot) {
+            const coinsToAdd  = Math.min(lootPreview.coins,  A.loot.coinsLeft || 0);
+            const energyToAdd = Math.min(lootPreview.energy, A.loot.energyLeft || 0);
+            const gemsToAdd   = Math.min(lootPreview.gems,   A.loot.gemsLeft || 0);
+
+            if (coinsToAdd > 0) { ns.eco.coins += coinsToAdd; A.loot.coinsLeft  -= coinsToAdd; }
+            if (energyToAdd > 0) { ns.eco.energy.current = Math.min(ns.eco.energy.max, ns.eco.energy.current + energyToAdd); A.loot.energyLeft -= energyToAdd; }
+            if (gemsToAdd > 0) { ns.eco.gems += gemsToAdd; A.loot.gemsLeft -= gemsToAdd; }
+
+            if (coinsToAdd > 0) setCoinsAnimKey(k => k + 1);
           }
-
-          if (gainedCoins > 0) setCoinsAnimKey(k => k + 1);
-
-          const todayKey = new Date().toDateString();
-          ns.world.insectDaily ||= { day: todayKey, kills: 0, milestones: {10:false,25:false,50:false} };
-          if (ns.world.insectDaily.day !== todayKey) ns.world.insectDaily = { day: todayKey, kills: 0, milestones: {10:false,25:false,50:false} };
-          ns.world.insectDaily.kills += 1;
-          const m = ns.world.insectDaily.milestones;
-          const grant = (amt)=> { ns.eco.coins += amt; if (amt > 0) setCoinsAnimKey(k => k + 1); };
-          if (!m[10] && ns.world.insectDaily.kills >= 10) { m[10]=true; grant(10); }
-          if (!m[25] && ns.world.insectDaily.kills >= 25) { m[25]=true; grant(30); }
-          if (!m[50] && ns.world.insectDaily.kills >= 50) { m[50]=true; grant(80); }
 
           return ns;
         });
 
-        let floaterText = (kind === 'bug' ? '+3💰' : '+4💰');
-        if (gainedCoins) floaterText = `+${3 + gainedCoins}💰`;
-        if (gainedEnergy) floaterText += ' +⚡';
-        
-        let comboHtml = '';
-        if (localComboMult > 1) {
-            comboHtml = ` <span class="badge">x${localComboMult}</span>`;
-        }
-        
-        addFloater(tapX, tapY, <span dangerouslySetInnerHTML={{ __html: floaterText + comboHtml }} />);
-      }
+        const parts = [];
+        if (lootPreview.coins > 0) parts.push(`+${lootPreview.coins}💰`);
+        if (lootPreview.energy > 0) parts.push('+⚡');
+        if (lootPreview.gems > 0) parts.push('+💎');
+        if (parts.length > 0) addFloater(tapX, tapY, parts.join(' '));
+      };
 
       const handlePlant = (plotId) => {
         const seedType = selectedSeed;
@@ -1014,12 +1035,6 @@
                       ? fmtMMSS(Math.ceil((world.beetleAttack.announceUntil - now)/1000))
                       : fmtMMSS(Math.ceil((world.beetleAttack.endsAt - now)/1000))}
                   </span>
-                </div>
-              )}
-               {gameState.world?.insectDaily && (
-                <div className="bg-black/30 text-white px-2 py-1 rounded-full text-[11px]">
-                  🐞 Сегодня: {gameState.world.insectDaily.kills}
-                  <span className="opacity-70"> · цели: 10/25/50</span>
                 </div>
               )}
             </div>
