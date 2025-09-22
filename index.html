@@ -255,6 +255,10 @@
       filter: drop-shadow(0 1px 2px rgba(0,0,0,.25));
       pointer-events:auto;
       cursor:pointer;
+      /* расширяем хитбокс без визуального увеличения */
+      padding: 12px;            /* зона клика вокруг спрайта */
+      margin-left: -12px;
+      margin-top: -12px;
     }
     
     /* маленькие UI-иконки в кнопках/лейблах */
@@ -264,12 +268,13 @@
       object-fit:contain;
     }
 
-    /* картинка насекомого под произвольный размер контейнера */
+    /* сам спрайт занимает исходные width/height контейнера */
     .bug-sprite, .bee-sprite {
       width: 100%;
       height: 100%;
       display: block;
       object-fit: contain;
+      pointer-events: none;      /* чтобы клик ловил .bug */
     }
   </style>
 </head>
@@ -307,6 +312,19 @@
     }
     function energySecondsToNext(energy, now) { if (energy.current >= energy.max) return 0; const intervalMs = 60000 / Math.max(0.0001, energy.regenPerMinute); const msPassedSinceLastRegen = now - energy.lastRefill; const msLeft = intervalMs - (msPassedSinceLastRegen % intervalMs); return Math.ceil(msLeft / 1000); }
     
+    // Сколько реально посажено
+    const plantedCount = (state) =>
+      state.plots.reduce((acc, p) => acc + (p.crop ? 1 : 0), 0);
+
+    // Вычислить y в процентах в пределах видимой части play-area
+    const visibleYPct = (paEl) => {
+      if (!paEl) return 50; // фолбэк
+      const { scrollTop, clientHeight, scrollHeight } = paEl;
+      // выбираем случайный пиксель по вертикали в видимой области
+      const yPx = scrollTop + Math.random() * clientHeight;
+      return clamp((yPx / scrollHeight) * 100, 2, 98);
+    };
+
     const stageIcon = (type, stage) => {
       const cls = (s) => `crop-img ${s}`;
       if (stage === 'Seed') return <img src="https://raw.githubusercontent.com/Poklontsevv/growgarden/main/seed.png" alt="Seed" className={cls('crop-img--seed')} />;
@@ -373,7 +391,8 @@
       eco: { coins: 50, gems: 0, energy: { current: 20, max: 20, lastRefill: Date.now(), regenPerMinute: 1 }, marketTrend: Object.fromEntries(Object.keys(CROP_DATA).map(k=>[k,1])), hotPrice: null, },
       world: { weather: 'Sunny', lastWeatherUpdate: Date.now(), lastOrdersUpdate: Date.now(), heatwaveUntil: 0, bugs: [], bees: [], nextOrderAt: Date.now() + rand(60, 120)*1000, 
         bugAttack: { phase:'idle', announceUntil:0, endsAt:0, nextSpawnAt:0, cooldownUntil:0 }, 
-        beeAttack: { phase:'idle', announceUntil:0, endsAt:0, nextSpawnAt:0, cooldownUntil:0 } 
+        beeAttack: { phase:'idle', announceUntil:0, endsAt:0, nextSpawnAt:0, cooldownUntil:0 },
+        globalEventLockUntil: 0,
       },
       lastActiveAt: Date.now(),
       upgrades: { EnergyCap: 0, Storage: 0, EnergyRegen: 0, PlotSlots: 0 }, shop: rollShopStock(),
@@ -382,6 +401,7 @@
     const generateOrders = (count) => Array.from({ length: count }, (_, i) => { const reqItem1 = Object.keys(CROP_DATA)[randInt(0, Object.keys(CROP_DATA).length-1)]; const reqQty1 = 5 + randInt(0,5); const reward = Math.floor(CROP_DATA[reqItem1].basePrice * reqQty1 * rand(1.5, 2)); return { id: `order-${Date.now()}-${i}`, requires: [{ item: reqItem1, qty: reqQty1 }], rewardCoins: reward, rewardGems: Math.random() < 0.1 ? 1 : undefined, expiresAt: Date.now() + rand(8, 18) * 60 * 1000 }; });
     
     function App() {
+      const playAreaRef = useRef(null);
       const [gameState, setGameState] = useState(() => {
         try {
           const saved = localStorage.getItem(SAVE_KEY);
@@ -397,6 +417,7 @@
           state.world.bugs = state.world.bugs ?? []; state.world.bees = state.world.bees ?? [];
           state.world.bugAttack = state.world.bugAttack ?? { phase:'idle', announceUntil:0, endsAt:0, nextSpawnAt:0, cooldownUntil:0 };
           state.world.beeAttack = state.world.beeAttack ?? { phase:'idle', announceUntil:0, endsAt:0, nextSpawnAt:0, cooldownUntil:0 };
+          state.world.globalEventLockUntil = state.world.globalEventLockUntil ?? 0;
 
           const now = Date.now();
           const dt = Math.min(now - state.lastActiveAt, OFFLINE_CAP_HOURS * 3600 * 1000);
@@ -434,18 +455,13 @@
                 return { ...ent, x: nx, y: ny };
               })
               .filter(ent =>
-                t < ent.expiresAt && ent.x > -15 && ent.x < 115
+                performance.now() < ent.expiresAt && ent.x > -15 && ent.x < 115
               );
 
             const bugs = immUpdate(w.bugs);
             const bees = immUpdate(w.bees);
-            
-            if (bugs.length === w.bugs.length && bees.length === w.bees.length &&
-                bugs.every((b, i) => b.x === w.bugs[i].x) &&
-                bees.every((b, i) => b.x === w.bees[i].x)) {
-              return prev;
-            }
-            
+
+            if (w.bugs === bugs && w.bees === bees) return prev;
             return { ...prev, world: { ...w, bugs, bees } };
           });
 
@@ -476,8 +492,15 @@
               if ((newState.orders || []).length < 3 && (newState.world.nextOrderAt || 0) <= currentNow) { newState.orders.push(...generateOrders(1)); newState.world.nextOrderAt = currentNow + rand(60,120)*1000; }
               if (currentNow - (newState.world.lastOrdersUpdate || 0) >= Ticks.ORDERS) { if (Math.max(0, 3 - newState.orders.length) > 0) newState.orders.push(...generateOrders(1)); newState.world.lastOrdersUpdate = currentNow; }
               if (currentNow - (newState.world.lastWeatherUpdate || 0) >= Ticks.WEATHER) { newState.world.weather = ['Sunny', 'Rainy', 'Cloudy'][randInt(0,2)]; newState.world.lastWeatherUpdate = currentNow; if (newState.world.weather === 'Sunny' && Math.random() < 0.35) { newState.world.heatwaveUntil = currentNow + rand(90,180)*1000; } }
-
+              
               const handleAttack = (type) => {
+                if (plantedCount(newState) < 2) return;
+
+                const otherKey = (type === 'bug') ? 'beeAttack' : 'bugAttack';
+                const other = newState.world[otherKey];
+                if (other.phase === 'announce' || other.phase === 'active') return;
+                if (currentNow < newState.world.globalEventLockUntil) return;
+
                 const nodeKey = type === 'bug' ? 'bugAttack' : 'beeAttack';
                 const listKey = type === 'bug' ? 'bugs' : 'bees';
                 const A = newState.world[nodeKey];
@@ -487,6 +510,7 @@
                     if (currentNow > A.cooldownUntil && Math.random() < 0.12) {
                       A.phase = 'announce';
                       A.announceUntil = currentNow + rand(3000, 5000);
+                      newState.world.globalEventLockUntil = currentNow + rand(6000, 10000);
                     }
                     break;
                   }
@@ -494,7 +518,7 @@
                     if (currentNow >= A.announceUntil) {
                       A.phase = 'active';
                       A.endsAt = currentNow + rand(8000, 20000);
-                      A.nextSpawnAt = currentNow; // сразу первая пачка
+                      A.nextSpawnAt = currentNow;
                     }
                     break;
                   }
@@ -502,26 +526,33 @@
                     if (currentNow >= A.endsAt) {
                       A.phase = 'idle';
                       A.cooldownUntil = currentNow + rand(25000, 60000);
+                      const bigGap = Math.random() < 0.5;
+                      newState.world.globalEventLockUntil = currentNow + (bigGap ? rand(90000, 240000) : rand(12000, 35000));
                     } else if (currentNow >= A.nextSpawnAt) {
                       const list = newState.world[listKey];
-                      const count = randInt(1, 3);
+                      const count = randInt(1, 4);
+                      const fastQuota = Math.min(2, randInt(1, 2));
+
                       for (let i = 0; i < count; i++) {
                         const size = rand(5, 14);
-                        const y = rand(8, 92);
-                        const speed = type === 'bug' ? rand(25, 40) : rand(30, 50);
-                        const x = type === 'bug' ? -12 : 112;
-                        const vx = type === 'bug' ? +speed : -speed;
+                        const y = visibleYPct(playAreaRef.current);
+                        const isFast = i < fastQuota;
+                        const base = (type === 'bug') ? (isFast ? rand(24, 34) : rand(8, 18)) : (isFast ? rand(28, 40) : rand(10, 22));
+                        const x = (type === 'bug') ? -12 : 112;
+                        const vx = (type === 'bug') ? +base : -base;
+
                         list.push({
-                          id: `${currentNow}-${i}-${Math.random()}`, type, x, y, vx, vy:0, size,
+                          id: `${currentNow}-${i}-${Math.random()}`, type, x, y, vx, vy: 0, size,
                           expiresAt: currentNow + rand(7000, 12000)
                         });
                       }
-                      A.nextSpawnAt = currentNow + rand(400, 1400); // новая пачка
+                      A.nextSpawnAt = currentNow + rand(600, 1600);
                     }
                     break;
                   }
                 }
               };
+
               handleAttack('bug');
               handleAttack('bee');
               
@@ -674,7 +705,7 @@
           </div>
 
           <div className="app-container text-gray-800 font-sans">
-              <div className="play-area">
+              <div className="play-area" ref={playAreaRef}>
                   <div className="plots-wrap">
                     <div className="bug-layer">
                       {[...(world.bugs || []), ...(world.bees || [])].map(ent => (
