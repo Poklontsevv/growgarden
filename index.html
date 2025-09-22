@@ -325,6 +325,19 @@
     }
     .seed-icon { width: 24px; height: 24px; object-fit: contain; display:inline-block; }
     .shop-icon { width: 22px; height: 22px; object-fit: contain; display:inline-block; margin-right: 4px; }
+    
+    .damage-banner .title { font-weight: 700; font-size: 12px; }
+    .damage-banner .subtitle { font-size: 11px; opacity: .9; }
+    .damage-bar{
+      position: relative; height: 6px; background: rgba(255,255,255,.22);
+      border-radius: 9999px; overflow: hidden; margin-top: 4px;
+    }
+    .damage-bar > span{
+      position:absolute; inset:0 auto 0 0; width:100%;
+      background: linear-gradient(90deg, #ef4444, #f97316);
+      opacity:.7; animation: damage-fill 420ms ease-out;
+    }
+    @keyframes damage-fill{ from{ width: 10%; } to{ width: 100%; } }
   </style>
 </head>
 <body>
@@ -513,11 +526,14 @@
       inv: { seeds: Object.fromEntries(Object.keys(CROP_DATA).map(k=>[k,0])), raw:{}, items:{Fertilizer:0, PestControl:0} },
       orders: [],
       eco: { coins: 50, gems: 0, energy: { current: 20, max: 20, lastRefill: Date.now(), regenPerMinute: 1 }, marketTrend: Object.fromEntries(Object.keys(CROP_DATA).map(k=>[k,1])), hotPrice: null, },
-      world: { weather: 'Sunny', lastWeatherUpdate: Date.now(), lastOrdersUpdate: Date.now(), heatwaveUntil: 0, bugs: [], beetles: [], nextOrderAt: Date.now() + rand(60, 120)*1000, 
+      world: { 
+        weather: 'Sunny', lastWeatherUpdate: Date.now(), lastOrdersUpdate: Date.now(), 
+        heatwaveUntil: 0, bugs: [], beetles: [], nextOrderAt: Date.now() + rand(60, 120)*1000, 
         bugAttack: { phase:'idle', announceUntil:0, endsAt:0, nextSpawnAt:0, cooldownUntil:0 }, 
         beetleAttack: { phase:'idle', announceUntil:0, endsAt:0, nextSpawnAt:0, cooldownUntil:0 },
         globalEventLockUntil: 0,
-        beetleRollbackCD: {}
+        beetleRollbackCD: {},
+        damageReports: []
       },
       lastActiveAt: Date.now(),
       upgrades: { EnergyCap: 0, Storage: 0, EnergyRegen: 0, PlotSlots: 0 }, shop: rollShopStock(),
@@ -545,6 +561,7 @@
           state.world.beetleAttack = state.world.beetleAttack ?? state.world.beeAttack ?? { phase:'idle', announceUntil:0, endsAt:0, nextSpawnAt:0, cooldownUntil:0 };
           state.world.globalEventLockUntil = state.world.globalEventLockUntil ?? 0;
           state.world.beetleRollbackCD = state.world.beetleRollbackCD ?? {};
+          state.world.damageReports = state.world.damageReports ?? [];
 
           const now = Date.now();
           const dt = Math.min(now - state.lastActiveAt, OFFLINE_CAP_HOURS * 3600 * 1000);
@@ -561,6 +578,26 @@
       const [now, setNow] = useState(Date.now());
       const [floaters, setFloaters] = useState([]);
       const [coinsAnimKey, setCoinsAnimKey] = useState(0);
+      const [damageBanners, setDamageBanners] = useState([]);
+
+      useEffect(() => {
+        const reports = gameState.world?.damageReports || [];
+        if (!reports.length) return;
+
+        setDamageBanners(prev => [...prev, ...reports]);
+
+        setGameState(prev => {
+          const ns = JSON.parse(JSON.stringify(prev));
+          ns.world.damageReports = [];
+          return ns;
+        });
+
+        reports.forEach(r => {
+          setTimeout(() => {
+            setDamageBanners(prev => prev.filter(b => b.id !== r.id));
+          }, 4000);
+        });
+      }, [gameState.world?.damageReports?.length]);
 
       const addFloater = (x, y, text) => {
         const id = Math.random().toString(36).slice(2);
@@ -677,11 +714,31 @@
                         energyLeft: randInt(INSECT_LOOT.budget.energyMin, INSECT_LOOT.budget.energyMax),
                         gemsLeft: randInt(INSECT_LOOT.budget.gemsMin, INSECT_LOOT.budget.gemsMax),
                       };
+                      A.stats = { waterLost: 0, fertLost: 0, freezeMs: 0, rollback: 0 };
                     }
                     break;
                   }
                   case 'active': {
                     if (currentNow >= A.endsAt) {
+                       if (A.stats) {
+                        const isBug = (type === 'bug');
+                        const w = Math.round(A.stats.waterLost || 0);
+                        const f = Math.round(A.stats.fertLost  || 0);
+                        const fr = Math.round((A.stats.freezeMs || 0) / 1000);
+                        const rbPct = Math.round((A.stats.rollback || 0) * 100);
+
+                        const text = isBug
+                          ? `🐛 Ущерб волны: -${w} воды, -${f} удобр.`
+                          : `🪲 Ущерб волны: +${fr}с заморозки, -${rbPct}% прогресса`;
+
+                        newState.world.damageReports.push({
+                          id: `dmg-${type}-${currentNow}-${Math.random()}`,
+                          type, text, stats: A.stats
+                        });
+
+                        A.stats = null;
+                      }
+
                       A.phase = 'idle';
                       A.cooldownUntil = currentNow + rand(50000, 120000);
                       const bigGap = Math.random() < 0.5;
@@ -740,8 +797,15 @@
                         if (pIdx >= 0) {
                           const crop = newState.plots[pIdx].crop;
                           if (crop) {
+                            const beforeP = crop.progress;
                             const stageFloor = (crop.progress < 0.5) ? 0 : 0.5;
                             crop.progress = clamp(crop.progress - DAMAGE_TUNING.beetle.leaveRollback, stageFloor, 1);
+                            const deltaP = Math.max(0, beforeP - crop.progress);
+                            
+                            const BEA2 = newState.world.beetleAttack;
+                            (BEA2.stats ||= { waterLost:0, fertLost:0, freezeMs:0, rollback:0 });
+                            BEA2.stats.rollback += deltaP;
+
                             if (crop.stage === 'Mature' && crop.progress < 1)
                               crop.stage = (crop.progress >= 0.5) ? 'Sprout' : 'Seed';
                             beetleCD[plotId] = currentNow + DAMAGE_TUNING.beetle.rollbackCooldownSec*1000;
@@ -770,13 +834,29 @@
                   ent.dwellOnThisPlotMs = (ent.dwellOnThisPlotMs || 0) + 1000;
 
                   if (L.type === 'bug') {
+                    const beforeW = plot.crop.water;
+                    const beforeF = plot.crop.fertilizer;
                     const mul = (plot.crop.shieldUntil && currentNow < plot.crop.shieldUntil) ? DAMAGE_TUNING.bug.shieldMultiplier : 1;
                     const dw = DAMAGE_TUNING.bug.waterPerSec * mul;
                     const df = DAMAGE_TUNING.bug.fertPerSec * mul;
                     plot.crop.water = clamp(plot.crop.water - dw, 0, 100);
                     plot.crop.fertilizer = clamp(plot.crop.fertilizer - df, 0, 100);
+                    const effW = Math.max(0, beforeW - plot.crop.water);
+                    const effF = Math.max(0, beforeF - plot.crop.fertilizer);
+                    const BA = newState.world.bugAttack;
+                    (BA.stats ||= { waterLost:0, fertLost:0, freezeMs:0, rollback:0 });
+                    BA.stats.waterLost += effW;
+                    BA.stats.fertLost  += effF;
                   } else { // beetle
-                    plot.crop.frozenUntil = Math.max(plot.crop.frozenUntil || 0, currentNow + DAMAGE_TUNING.beetle.freezeExtendSec*1000);
+                    const oldFrozen = plot.crop.frozenUntil || 0;
+                    const extendMs = DAMAGE_TUNING.beetle.freezeExtendSec * 1000;
+                    const newFrozen = Math.max(oldFrozen, currentNow + extendMs);
+                    plot.crop.frozenUntil = newFrozen;
+
+                    const added = Math.max(0, newFrozen - oldFrozen);
+                    const BEA = newState.world.beetleAttack;
+                    (BEA.stats ||= { waterLost:0, fertLost:0, freezeMs:0, rollback:0 });
+                    BEA.stats.freezeMs += added;
                   }
                 }
               }
@@ -1006,6 +1086,12 @@
                   Грядки под атакой: {Object.keys(world.attackedMap).length}
                 </div>
               )}
+              {damageBanners.map(b => (
+                <div key={b.id} className="event-card damage-banner">
+                  <div className="title">{b.text}</div>
+                  <div className="damage-bar"><span /></div>
+                </div>
+              ))}
             </div>
             <div className="hud-resources">
               <div className={`bg-yellow-400 text-yellow-900 font-bold px-3 py-1 rounded-full shadow-md ${coinsAnimKey ? 'coins-bounce' : ''}`}>💰 {eco.coins}</div>
