@@ -269,7 +269,7 @@
     }
 
     /* сам спрайт занимает исходные width/height контейнера */
-    .bug-sprite, .bee-sprite {
+    .bug-sprite, .beetle-sprite {
       width: 100%;
       height: 100%;
       display: block;
@@ -331,6 +331,8 @@
       fertilizer: "https://raw.githubusercontent.com/Poklontsevv/growgarden/main/fertilizer%202.png",
       protect:    "https://raw.githubusercontent.com/Poklontsevv/growgarden/main/protect%202.png",
     };
+    
+    const ENEMY_IMG_BEETLE = "https://raw.githubusercontent.com/Poklontsevv/growgarden/main/bug.png";
 
     const stageIcon = (type, stage) => {
       const cls = (s) => `crop-img ${s}`;
@@ -396,9 +398,9 @@
       inv: { seeds: Object.fromEntries(Object.keys(CROP_DATA).map(k=>[k,0])), raw:{}, items:{Fertilizer:0, PestControl:0} },
       orders: [],
       eco: { coins: 50, gems: 0, energy: { current: 20, max: 20, lastRefill: Date.now(), regenPerMinute: 1 }, marketTrend: Object.fromEntries(Object.keys(CROP_DATA).map(k=>[k,1])), hotPrice: null, },
-      world: { weather: 'Sunny', lastWeatherUpdate: Date.now(), lastOrdersUpdate: Date.now(), heatwaveUntil: 0, bugs: [], bees: [], nextOrderAt: Date.now() + rand(60, 120)*1000, 
+      world: { weather: 'Sunny', lastWeatherUpdate: Date.now(), lastOrdersUpdate: Date.now(), heatwaveUntil: 0, bugs: [], beetles: [], nextOrderAt: Date.now() + rand(60, 120)*1000, 
         bugAttack: { phase:'idle', announceUntil:0, endsAt:0, nextSpawnAt:0, cooldownUntil:0 }, 
-        beeAttack: { phase:'idle', announceUntil:0, endsAt:0, nextSpawnAt:0, cooldownUntil:0 },
+        beetleAttack: { phase:'idle', announceUntil:0, endsAt:0, nextSpawnAt:0, cooldownUntil:0 },
         globalEventLockUntil: 0,
       },
       lastActiveAt: Date.now(),
@@ -421,9 +423,10 @@
           state.inv.seeds = state.inv.seeds ?? {};
           state.inv.items = state.inv.items ?? {Fertilizer:0, PestControl:0};
           state.world = state.world ?? {};
-          state.world.bugs = state.world.bugs ?? []; state.world.bees = state.world.bees ?? [];
+          state.world.bugs = state.world.bugs ?? [];
+          state.world.beetles = state.world.beetles ?? state.world.bees ?? []; // Migration
           state.world.bugAttack = state.world.bugAttack ?? { phase:'idle', announceUntil:0, endsAt:0, nextSpawnAt:0, cooldownUntil:0 };
-          state.world.beeAttack = state.world.beeAttack ?? { phase:'idle', announceUntil:0, endsAt:0, nextSpawnAt:0, cooldownUntil:0 };
+          state.world.beetleAttack = state.world.beetleAttack ?? state.world.beeAttack ?? { phase:'idle', announceUntil:0, endsAt:0, nextSpawnAt:0, cooldownUntil:0 }; // Migration
           state.world.globalEventLockUntil = state.world.globalEventLockUntil ?? 0;
 
           const now = Date.now();
@@ -466,10 +469,10 @@
               );
 
             const bugs = immUpdate(w.bugs);
-            const bees = immUpdate(w.bees);
+            const beetles = immUpdate(w.beetles);
 
-            if (w.bugs === bugs && w.bees === bees) return prev;
-            return { ...prev, world: { ...w, bugs, bees } };
+            if (w.bugs === bugs && w.beetles === beetles) return prev;
+            return { ...prev, world: { ...w, bugs, beetles } };
           });
 
           rafId = requestAnimationFrame(animate);
@@ -503,13 +506,13 @@
               const handleAttack = (type) => {
                 if (plantedCount(newState) < 2) return;
 
-                const otherKey = (type === 'bug') ? 'beeAttack' : 'bugAttack';
+                const otherKey = (type === 'bug') ? 'beetleAttack' : 'bugAttack';
                 const other = newState.world[otherKey];
                 if (other.phase === 'announce' || other.phase === 'active') return;
                 if (currentNow < newState.world.globalEventLockUntil) return;
 
-                const nodeKey = type === 'bug' ? 'bugAttack' : 'beeAttack';
-                const listKey = type === 'bug' ? 'bugs' : 'bees';
+                const nodeKey = type === 'bug' ? 'bugAttack' : 'beetleAttack';
+                const listKey = type === 'bug' ? 'bugs' : 'beetles';
                 const A = newState.world[nodeKey];
 
                 switch (A.phase) {
@@ -544,7 +547,9 @@
                         const size = rand(5, 14);
                         const y = visibleYPct(playAreaRef.current);
                         const isFast = i < fastQuota;
-                        const base = (type === 'bug') ? (isFast ? rand(24, 34) : rand(8, 18)) : (isFast ? rand(28, 40) : rand(10, 22));
+                        const base = (type === 'bug')
+                          ? (isFast ? rand(24, 34) : rand(8, 18))
+                          : (isFast ? rand(28, 40) : rand(10, 22));
                         const x = (type === 'bug') ? -12 : 112;
                         const vx = (type === 'bug') ? +base : -base;
 
@@ -561,7 +566,7 @@
               };
 
               handleAttack('bug');
-              handleAttack('bee');
+              handleAttack('beetle');
               
               newState.plots.forEach((plot) => {
                   if (plot.crop) {
@@ -584,7 +589,19 @@
 
       const spendEnergy = (amount) => { if (gameState.eco.energy.current < amount) { showToast("Недостаточно энергии! ⚡", true); return false; } setGameState(prev => ({ ...prev, eco: { ...prev.eco, energy: { ...prev.eco.energy, current: prev.eco.energy.current - amount } } })); return true; }
       const handlePlotClick = (plot) => { if (plot.crop?.stage === 'Mature') handleHarvest(plot.id); else if (!plot.crop) handlePlant(plot.id); }
-      const handleInsectClick = (kind, id) => { if (!spendEnergy(1)) return; haptic('success'); setGameState(prev=>{ const ns={...prev}; const listKey = kind === 'bug' ? 'bugs' : 'bees'; ns.world[listKey] = ns.world[listKey].filter(i=>i.id!==id); ns.eco.coins += (kind==='bug'?5:3); return ns; }); showToast(kind==='bug'?'Уничтожена!': 'Прогнана!'); }
+      const handleInsectClick = (kind, id) => {
+        if (!spendEnergy(1)) return;
+        haptic('success');
+        setGameState(prev => {
+          const ns = { ...prev };
+          const normalized = (kind === 'bee') ? 'beetle' : kind; // For old saves
+          const listKey = normalized === 'bug' ? 'bugs' : 'beetles';
+          ns.world[listKey] = ns.world[listKey].filter(i => i.id !== id);
+          ns.eco.coins += (normalized === 'bug' ? 5 : 3);
+          return ns;
+        });
+        showToast(kind === 'bug' ? 'Уничтожена!' : 'Прогнан!');
+      }
 
       const handlePlant = (plotId) => {
         const seedType = selectedSeed;
@@ -697,14 +714,13 @@
                 </div>
               )}
 
-              {(world.beeAttack.phase === 'announce' || world.beeAttack.phase === 'active') && (
-                <div title="Атака пчёл" className="bg-black/20 text-white rounded-full px-2 py-1 flex items-center gap-1">
-                  <img src="https://raw.githubusercontent.com/Poklontsevv/growgarden/main/bee.png"
-                       alt="bee" style={{ width: 20, height: 20 }} />
+              {(world.beetleAttack.phase === 'announce' || world.beetleAttack.phase === 'active') && (
+                <div title="Атака жуков" className="bg-black/20 text-white rounded-full px-2 py-1 flex items-center gap-1">
+                  <img src={ENEMY_IMG_BEETLE} alt="beetle" style={{ width: 20, height: 20 }} />
                   <span className="text-[11px]">
-                    {world.beeAttack.phase === 'announce'
-                      ? fmtMMSS(Math.ceil((world.beeAttack.announceUntil - now)/1000))
-                      : fmtMMSS(Math.ceil((world.beeAttack.endsAt - now)/1000))}
+                    {world.beetleAttack.phase === 'announce'
+                      ? fmtMMSS(Math.ceil((world.beetleAttack.announceUntil - now)/1000))
+                      : fmtMMSS(Math.ceil((world.beetleAttack.endsAt - now)/1000))}
                   </span>
                 </div>
               )}
@@ -715,10 +731,11 @@
               <div className="play-area" ref={playAreaRef}>
                   <div className="plots-wrap">
                     <div className="bug-layer">
-                      {[...(world.bugs || []), ...(world.bees || [])].map(ent => (
+                      {[...(world.bugs || []), ...(world.beetles || [])].map(ent => (
                         <span key={ent.id} className="bug" style={{ left: `${ent.x}%`, top: `${ent.y}%`, width: `${ent.size}%`, height: `${ent.size}%` }} onClick={(e) => { e.stopPropagation(); handleInsectClick(ent.type, ent.id); }}>
-                          {ent.type === 'bug' ? ( <img className="bug-sprite" alt="caterpillar" src="https://raw.githubusercontent.com/Poklontsevv/growgarden/main/caterpillar.png"/> ) 
-                                               : ( <img className="bee-sprite" alt="bee" src="https://raw.githubusercontent.com/Poklontsevv/growgarden/main/bee.png"/> )}
+                          {ent.type === 'bug'
+                             ? (<img className="bug-sprite" alt="caterpillar" src="https://raw.githubusercontent.com/Poklontsevv/growgarden/main/caterpillar.png" />)
+                             : (<img className="beetle-sprite" alt="beetle" src={ENEMY_IMG_BEETLE} />)}
                         </span>
                       ))}
                     </div>
