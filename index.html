@@ -289,20 +289,148 @@
     
     const stageIcon = (type, stage) => {
       const cls = (s) => `crop-img ${s}`;
+
+      // Единый seed для всех культур
       if (stage === 'Seed') {
-        return <img src="https://raw.githubusercontent.com/Poklontsevv/growgarden/main/seed.png" alt="Seed" className={cls('crop-img--seed')} />;
+        return (
+          <img
+            src="https://raw.githubusercontent.com/Poklontsevv/growgarden/main/seed.png"
+            alt="Seed"
+            className={cls('crop-img--seed')}
+          />
+        );
       }
+
+      // Вспомогательный резолвер для пар (Sprout / Plant)
+      const sprite = (sproutUrl, plantUrl, altBase) => (
+        stage === 'Sprout' ? (
+          <img src={sproutUrl} alt={`${altBase} sprout`} className={cls('crop-img--sprout')} />
+        ) : (
+          <img src={plantUrl}  alt={`${altBase} plant`}  className={cls('crop-img--plant')}  />
+        )
+      );
+
+      // ---- Новые картинки (позиции/размеры как у моркови за счёт тех же классов) ----
+      if (type === 'Coffee') {
+        return sprite(
+          'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/coffee_sprout.png',
+          'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/coffee_plant.png',
+          'Coffee'
+        );
+      }
+      if (type === 'Corn') {
+        return sprite(
+          'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/corn_sprout.png',
+          'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/corn_plant.png',
+          'Corn'
+        );
+      }
+      if (type === 'Cucumber') {
+        return sprite(
+          'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/cucumber_sprout.png',
+          'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/cucumber_plant.png',
+          'Cucumber'
+        );
+      }
+
+      // Уже реализованные через PNG
       if (type === 'Blueberry') {
-        return stage === 'Sprout'
-          ? <img src="https://raw.githubusercontent.com/Poklontsevv/growgarden/main/blueberry_sprout.png" alt="Blueberry sprout" className={cls('crop-img--sprout')} />
-          : <img src="https://raw.githubusercontent.com/Poklontsevv/growgarden/main/blueberry_plant.png"  alt="Blueberry plant"  className={cls('crop-img--plant')} />;
+        return sprite(
+          'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/blueberry_sprout.png',
+          'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/blueberry_plant.png',
+          'Blueberry'
+        );
       }
       if (type === 'Carrot') {
-        return stage === 'Sprout'
-          ? <img src="https://raw.githubusercontent.com/Poklontsevv/growgarden/main/carrot_sprout.png"   alt="Carrot sprout" className={cls('crop-img--sprout')} />
-          : <img src="https://raw.githubusercontent.com/Poklontsevv/growgarden/main/carrot_plant.png"    alt="Carrot plant"  className={cls('crop-img--plant')} />;
+        return sprite(
+          'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/carrot_sprout.png',
+          'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/carrot_plant.png',
+          'Carrot'
+        );
       }
-      // Остальные культуры — как было
+
+      // ---- Новые PNG для Garlic / Ginseng / Herb / Onion ----
+      if (type === 'Garlic') {
+        return sprite(
+          'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/garlic_sprout.png',
+          'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/garlic_plant.png',
+          'Garlic'
+        );
+      }
+      if (type === 'Ginseng') {
+        return sprite(
+          'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/ginseng_sprout.png',
+          'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/ginseng_plant.png',
+          'Ginseng'
+        );
+      }
+      // В CROP_DATA ключ называется 'Herb' (ед. число), поэтому проверяем именно его
+      if (type === 'Herb') {
+        return sprite(
+          'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/herbs_sprout.png',
+          'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/herbs_plant.png',
+          'Herb'
+        );
+      }
+      if (type === 'Onion') {
+        return sprite(
+          'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/onion_sprout.png',
+          'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/onion_plant.png',
+          'Onion'
+        );
+      }
+      
+      // ---- Новые PNG для Potato / Strawberry / Sunflower ----
+      if (type === 'Potato') {
+        return sprite(
+          'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/potato_sprout.png',
+          'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/potato_plant.png',
+          'Potato'
+        );
+      }
+      if (type === 'Strawberry') {
+        return sprite(
+          'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/strawberry_sprout.png',
+          'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/strawberry_plant.png',
+          'Strawberry'
+        );
+      }
+      if (type === 'Sunflower') {
+        return sprite(
+          'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/sunflower_sprout.png',
+          'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/sunflower_plant.png',
+          'Sunflower'
+        );
+      }
+      
+      // ---- Новые PNG для Tomato / Wheat ----
+      if (type === 'Tomato') {
+        // ВНИМАНИЕ: в исходных данных файл plant указан как "tomao_plant.png".
+        // Если по raw-ссылке будет 404, замени на "tomato_plant.png".
+        return sprite(
+          'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/tomato_sprout.png',
+          'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/tomao_plant.png',
+          'Tomato'
+        );
+      }
+      if (type === 'Wheat') {
+        return sprite(
+          'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/wheat_sprout.png',
+          'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/wheat_plant.png',
+          'Wheat'
+        );
+      }
+
+      // ---- Новые PNG для Pumpkin ----
+      if (type === 'Pumpkin') {
+        return sprite(
+          'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/pumpkin_sprout.png',
+          'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/pumpkin_plant.png',
+          'Pumpkin'
+        );
+      }
+
+      // Фолбэк для прочих культур: листик на Sprout, emoji-иконка на Plant/Mature
       return stage === 'Sprout' ? '🌿' : CROP_DATA[type].icon;
     };
     
