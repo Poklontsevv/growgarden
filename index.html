@@ -256,9 +256,9 @@
       pointer-events:auto;
       cursor:pointer;
       /* расширяем хитбокс без визуального увеличения */
-      padding: 12px;            /* зона клика вокруг спрайта */
-      margin-left: -12px;
-      margin-top: -12px;
+      padding: 16px;            /* зона клика вокруг спрайта */
+      margin-left: -16px;
+      margin-top: -16px;
     }
     
     /* маленькие UI-иконки в кнопках/лейблах */
@@ -300,6 +300,15 @@
     // --- GAME CODE STARTS HERE ---
     const Ticks = { GAME: 1000, WEATHER: 15 * 60 * 1000, MARKET: 5 * 60 * 1000, ORDERS: 10 * 60 * 1000, SHOP: 5 * 60 * 1000 };
     const OFFLINE_CAP_HOURS = 3;
+    
+    // Тюнинг насекомых: легко подкручивается без перегона по всему коду
+    const INSECT_TUNING = {
+      sizeMinPct: 10,   // раньше 5
+      sizeMaxPct: 18,   // раньше 14
+      speedScale: 0.75, // 0.75 = на 25% медленнее (увеличить/уменьшить по вкусу)
+      clickPadding: 16  // хитбокс вокруг спрайта, было 12
+    };
+
     const rand = (min, max) => min + Math.random() * (max - min);
     const randInt = (min, max) => Math.floor(rand(min, max + 1));
     const clamp = (num, min, max) => Math.min(Math.max(num, min), max);
@@ -544,14 +553,15 @@
                       const fastQuota = Math.min(2, randInt(1, 2));
 
                       for (let i = 0; i < count; i++) {
-                        const size = rand(5, 14);
+                        const size = rand(INSECT_TUNING.sizeMinPct, INSECT_TUNING.sizeMaxPct);
                         const y = visibleYPct(playAreaRef.current);
                         const isFast = i < fastQuota;
                         const base = (type === 'bug')
                           ? (isFast ? rand(24, 34) : rand(8, 18))
                           : (isFast ? rand(28, 40) : rand(10, 22));
+                        const speed = base * INSECT_TUNING.speedScale; // замедляем на процент
                         const x = (type === 'bug') ? -12 : 112;
-                        const vx = (type === 'bug') ? +base : -base;
+                        const vx = (type === 'bug') ? +speed : -speed;
 
                         list.push({
                           id: `${currentNow}-${i}-${Math.random()}`, type, x, y, vx, vy: 0, size,
