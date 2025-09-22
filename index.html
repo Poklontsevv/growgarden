@@ -309,6 +309,18 @@
       clickPadding: 16  // хитбокс вокруг спрайта, было 12
     };
 
+    const DAMAGE_TUNING = {
+      bug: { waterPerSec: 3, fertPerSec: 2, shieldMultiplier: 0.5 },
+      beetle: { freezeExtendSec: 1.2, leaveRollback: 0.04, minDwellForRollbackSec: 2, rollbackCooldownSec: 5 }
+    };
+
+    const COMPENSATION = {
+      bugHealPct: 5,                    // +5% к более просевшей шкале
+      beetleBuff: { mulPerStack: 0.10, durationMs: 10000, maxStacks: 2 }, // +10% x до 2-х стаков
+      rareCoinChance: 0.10,
+      rareEnergyChance: 0.05
+    };
+
     const rand = (min, max) => min + Math.random() * (max - min);
     const randInt = (min, max) => Math.floor(rand(min, max + 1));
     const clamp = (num, min, max) => Math.min(Math.max(num, min), max);
@@ -389,7 +401,31 @@
 
     const calculateYield = (crop) => { const d = CROP_DATA[crop.type]; const qMul = 0.8 + 0.4 * (crop.quality - 1); const minY = Math.max(1, Math.round(d.baseYield)); const maxY = Math.max(minY, Math.round(d.baseYield * (1 + qMul))); return randInt(minY, maxY); };
     function rollShopStock() { const stock = {}; const now = Date.now(); const weights = { common: 1.0, uncommon: 0.6, rare: 0.3, epic: 0.15 }; Object.entries(CROP_DATA).forEach(([key, d]) => { const appear = Math.random() < (weights[d.rarity] ?? 1); stock[key] = { available: appear, qty: appear ? (d.stockPerRefresh ?? 5) : 0 }; }); return { stock, nextRefresh: now + Ticks.SHOP }; }
-    function growthSpeedMul(crop, world, now){ let m = (world.weather==='Sunny'?1:0.9); const red = (crop.water<20 || crop.fertilizer<20) ? 0.5 : 1; m *= red; if (now < crop.waterBoostUntil) m *= 1.25; if (now < crop.fertBoostUntil) m *= 1.15; return m; }
+    
+    function growthSpeedMul(crop, world, now){
+      // базовое
+      let m = (world.weather==='Sunny'?1:0.9);
+      const red = (crop.water<20 || crop.fertilizer<20) ? 0.5 : 1;
+      m *= red;
+
+      // фриз от жука
+      if (crop.frozenUntil && now < crop.frozenUntil) m *= 0;
+
+      // бафф роста от убийства жука
+      if (crop.growthBuffUntil && now < crop.growthBuffUntil) {
+        const stacks = clamp(crop.growthBuffStacks || 0, 0, COMPENSATION.beetleBuff.maxStacks);
+        m *= (1 + COMPENSATION.beetleBuff.mulPerStack * stacks);
+      } else {
+        // бафф закончился — сбросить стаки
+        if (crop.growthBuffStacks) crop.growthBuffStacks = 0;
+      }
+
+      // обычные бусты за уход
+      if (now < crop.waterBoostUntil) m *= 1.25;
+      if (now < crop.fertBoostUntil)  m *= 1.15;
+      return m;
+    }
+
     function secondsToNextStage(crop, world){
       const d = CROP_DATA[crop.type];
       if (!d || crop.progress >= 1) return 0;
@@ -411,6 +447,7 @@
         bugAttack: { phase:'idle', announceUntil:0, endsAt:0, nextSpawnAt:0, cooldownUntil:0 }, 
         beetleAttack: { phase:'idle', announceUntil:0, endsAt:0, nextSpawnAt:0, cooldownUntil:0 },
         globalEventLockUntil: 0,
+        beetleRollbackCD: {}
       },
       lastActiveAt: Date.now(),
       upgrades: { EnergyCap: 0, Storage: 0, EnergyRegen: 0, PlotSlots: 0 }, shop: rollShopStock(),
@@ -437,6 +474,7 @@
           state.world.bugAttack = state.world.bugAttack ?? { phase:'idle', announceUntil:0, endsAt:0, nextSpawnAt:0, cooldownUntil:0 };
           state.world.beetleAttack = state.world.beetleAttack ?? state.world.beeAttack ?? { phase:'idle', announceUntil:0, endsAt:0, nextSpawnAt:0, cooldownUntil:0 }; // Migration
           state.world.globalEventLockUntil = state.world.globalEventLockUntil ?? 0;
+          state.world.beetleRollbackCD = state.world.beetleRollbackCD ?? {};
 
           const now = Date.now();
           const dt = Math.min(now - state.lastActiveAt, OFFLINE_CAP_HOURS * 3600 * 1000);
@@ -451,6 +489,24 @@
       const [selectedSeed, setSelectedSeed] = useState('Carrot');
       const [toast, setToast] = useState(null);
       const [now, setNow] = useState(Date.now());
+
+      function getPlotUnderXYPercent(xPct, yPct) {
+        const layer = document.querySelector('.bug-layer');
+        const plots = Array.from(document.querySelectorAll('.plot-cell'));
+        if (!layer || plots.length === 0) return null;
+        const layerRect = layer.getBoundingClientRect();
+        const x = layerRect.left + (xPct / 100) * layerRect.width;
+        const y = layerRect.top  + (yPct / 100) * layerRect.height;
+        let best = null, bestArea = 0;
+        for (const cell of plots) {
+          const r = cell.getBoundingClientRect();
+          if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
+            const area = (r.right - r.left) * (r.bottom - r.top);
+            if (area > bestArea) { best = cell; bestArea = area; }
+          }
+        }
+        return best?.getAttribute('data-plot-id') || null;
+      }
 
       useEffect(() => { localStorage.setItem(SAVE_KEY, JSON.stringify(gameState)); }, [gameState]);
       const showToast = useCallback((message, isError = false) => { setToast(message); if (isError) haptic('error'); setTimeout(() => setToast(null), 3000); }, []);
@@ -565,7 +621,8 @@
 
                         list.push({
                           id: `${currentNow}-${i}-${Math.random()}`, type, x, y, vx, vy: 0, size,
-                          expiresAt: currentNow + rand(7000, 12000)
+                          expiresAt: currentNow + rand(7000, 12000),
+                          dwellOnPlotMs: 0, lastPlotId: null
                         });
                       }
                       A.nextSpawnAt = currentNow + rand(600, 1600);
@@ -577,6 +634,56 @@
 
               handleAttack('bug');
               handleAttack('beetle');
+
+              // Insect Damage Logic
+              const beetleCD = newState.world.beetleRollbackCD || (newState.world.beetleRollbackCD = {});
+              const lists = [
+                { type: 'bug', list: newState.world.bugs },
+                { type: 'beetle', list: newState.world.beetles }
+              ];
+              for (const L of lists) {
+                for (const ent of L.list) {
+                  const pid = getPlotUnderXYPercent(ent.x, ent.y);
+                  if (!pid) { 
+                    if (L.type === 'beetle' && ent.lastPlotId && ent.dwellOnPlotMs >= DAMAGE_TUNING.beetle.minDwellForRollbackSec*1000) {
+                      const cdUntil = beetleCD[ent.lastPlotId] || 0;
+                      if (currentNow >= cdUntil) {
+                        const pIdx = newState.plots.findIndex(p=>p.id===ent.lastPlotId);
+                        if (pIdx >= 0) {
+                          const crop = newState.plots[pIdx].crop;
+                          if (crop) {
+                            const before = crop.progress;
+                            const stageFloor = (crop.progress < 0.5) ? 0 : 0.5;
+                            crop.progress = clamp(crop.progress - DAMAGE_TUNING.beetle.leaveRollback, stageFloor, 1);
+                            if (crop.stage === 'Mature' && crop.progress < 1) crop.stage = (crop.progress >= 0.5) ? 'Sprout' : 'Seed';
+                            beetleCD[ent.lastPlotId] = currentNow + DAMAGE_TUNING.beetle.rollbackCooldownSec*1000;
+                          }
+                        }
+                      }
+                    }
+                    ent.targetPlotId = null;
+                    continue;
+                  }
+                  ent.targetPlotId = pid;
+                  ent.lastPlotId = pid;
+                  const pIdx = newState.plots.findIndex(p=>p.id===pid);
+                  if (pIdx < 0) continue;
+                  const plot = newState.plots[pIdx];
+                  if (!plot.crop) continue;
+
+                  ent.dwellOnPlotMs = (ent.dwellOnPlotMs || 0) + 1000;
+
+                  if (L.type === 'bug') {
+                    const mul = (plot.crop.shieldUntil && currentNow < plot.crop.shieldUntil) ? DAMAGE_TUNING.bug.shieldMultiplier : 1;
+                    const dw = DAMAGE_TUNING.bug.waterPerSec * mul;
+                    const df = DAMAGE_TUNING.bug.fertPerSec * mul;
+                    plot.crop.water = clamp(plot.crop.water - dw, 0, 100);
+                    plot.crop.fertilizer = clamp(plot.crop.fertilizer - df, 0, 100);
+                  } else { // beetle
+                    plot.crop.frozenUntil = Math.max(plot.crop.frozenUntil || 0, currentNow + DAMAGE_TUNING.beetle.freezeExtendSec*1000);
+                  }
+                }
+              }
               
               newState.plots.forEach((plot) => {
                   if (plot.crop) {
@@ -603,11 +710,48 @@
         if (!spendEnergy(1)) return;
         haptic('success');
         setGameState(prev => {
-          const ns = { ...prev };
-          const normalized = (kind === 'bee') ? 'beetle' : kind; // For old saves
+          const ns = JSON.parse(JSON.stringify(prev));
+          const normalized = (kind === 'bee') ? 'beetle' : kind; // миграция
           const listKey = normalized === 'bug' ? 'bugs' : 'beetles';
-          ns.world[listKey] = ns.world[listKey].filter(i => i.id !== id);
-          ns.eco.coins += (normalized === 'bug' ? 5 : 3);
+          const list = ns.world[listKey] || [];
+          const ent = list.find(i => i.id === id);
+          let pid = null;
+          if (ent) pid = getPlotUnderXYPercent(ent.x, ent.y);
+          
+          ns.world[listKey] = list.filter(i => i.id !== id);
+
+          if (pid) {
+            const idx = ns.plots.findIndex(p=>p.id===pid);
+            if (idx >= 0) {
+              const crop = ns.plots[idx].crop;
+              if (crop) {
+                if (normalized === 'bug') {
+                  const target = (crop.water <= crop.fertilizer) ? 'water' : 'fertilizer';
+                  crop[target] = clamp(crop[target] + COMPENSATION.bugHealPct, 0, 100);
+                } else {
+                  const nowTs = Date.now();
+                  if ((crop.growthBuffStacks || 0) < COMPENSATION.beetleBuff.maxStacks) {
+                    crop.growthBuffStacks = (crop.growthBuffStacks || 0) + 1;
+                  }
+                  crop.growthBuffUntil = Math.max(crop.growthBuffUntil || 0, nowTs + COMPENSATION.beetleBuff.durationMs);
+                }
+              }
+            }
+          }
+
+          if (Math.random() < COMPENSATION.rareCoinChance) ns.eco.coins += 1;
+          if (Math.random() < COMPENSATION.rareEnergyChance) ns.eco.energy.current = Math.min(ns.eco.energy.max, ns.eco.energy.current + 1);
+
+          const todayKey = new Date().toDateString();
+          ns.world.insectDaily ||= { day: todayKey, kills: 0, milestones: {10:false,25:false,50:false} };
+          if (ns.world.insectDaily.day !== todayKey) ns.world.insectDaily = { day: todayKey, kills: 0, milestones: {10:false,25:false,50:false} };
+          ns.world.insectDaily.kills += 1;
+          const m = ns.world.insectDaily.milestones;
+          const grant = (amt)=> ns.eco.coins += amt;
+          if (!m[10] && ns.world.insectDaily.kills >= 10) { m[10]=true; grant(10); }
+          if (!m[25] && ns.world.insectDaily.kills >= 25) { m[25]=true; grant(30); }
+          if (!m[50] && ns.world.insectDaily.kills >= 50) { m[50]=true; grant(80); }
+
           return ns;
         });
         showToast(kind === 'bug' ? 'Уничтожена!' : 'Прогнан!');
@@ -622,7 +766,12 @@
           const idx = prev.plots.findIndex(p=>p.id===plotId);
           if (idx<0 || prev.plots[idx].crop) return prev;
           const next = JSON.parse(JSON.stringify(prev));
-          next.plots[idx].crop = { type: seedType, plantedAt: Date.now(), stage:'Seed', progress:0, water: randInt(45,60), fertilizer: randInt(40,55), quality:1.0, plotId, waterBoostUntil:0, fertBoostUntil:0 };
+          next.plots[idx].crop = { 
+            type: seedType, plantedAt: Date.now(), stage:'Seed', progress:0, 
+            water: randInt(45,60), fertilizer: randInt(40,55), quality:1.0, 
+            plotId, waterBoostUntil:0, fertBoostUntil:0,
+            frozenUntil: 0, growthBuffUntil: 0, growthBuffStacks: 0
+          };
           next.inv.seeds[seedType] = Math.max(0, (next.inv.seeds[seedType]||0) - 1);
           return next;
         });
@@ -752,7 +901,7 @@
 
                     <div className="plots">
                       {plots.map(plot => (
-                          <div key={plot.id} className="plot-cell">
+                          <div key={plot.id} className="plot-cell" data-plot-id={plot.id}>
                             {plot.crop && plot.crop.stage !== 'Mature' && (
                               <div className="plot-toolbar">
                                 <button
@@ -779,7 +928,12 @@
                             )}
 
                             <div onClick={() => handlePlotClick(plot)} className={`plot cursor-pointer transition-all duration-200 ${world.heatwaveUntil > now && plot.crop ? 'plot--heated' : ''} ${hot?.crop === plot.crop?.type ? 'plot--hot' : ''}`}>
-                              {plot.crop && plot.crop.stage !== 'Mature' && ( <div className="plot-timer"> {fmtMMSS(secondsToNextStage(plot.crop, world))} </div> )}
+                              {plot.crop && plot.crop.stage !== 'Mature' && (
+                                <div className="plot-timer">
+                                  {fmtMMSS(secondsToNextStage(plot.crop, world))}
+                                  {now < (plot.crop.frozenUntil || 0) && <span> ❄️</span>}
+                                </div>
+                              )}
                               
                               {plot.crop ? (
                                 <>
