@@ -622,7 +622,8 @@
                         list.push({
                           id: `${currentNow}-${i}-${Math.random()}`, type, x, y, vx, vy: 0, size,
                           expiresAt: currentNow + rand(7000, 12000),
-                          dwellOnPlotMs: 0, lastPlotId: null
+                          dwellOnPlotMs: 0, lastPlotId: null,
+                          currentPlotId: null, dwellOnThisPlotMs: 0
                         });
                       }
                       A.nextSpawnAt = currentNow + rand(600, 1600);
@@ -644,34 +645,48 @@
               for (const L of lists) {
                 for (const ent of L.list) {
                   const pid = getPlotUnderXYPercent(ent.x, ent.y);
-                  if (!pid) { 
-                    if (L.type === 'beetle' && ent.lastPlotId && ent.dwellOnPlotMs >= DAMAGE_TUNING.beetle.minDwellForRollbackSec*1000) {
-                      const cdUntil = beetleCD[ent.lastPlotId] || 0;
+
+                  // 1) если насекомое НЕ над грядкой
+                  if (!pid) {
+                    if (L.type === 'beetle' && ent.currentPlotId && ent.dwellOnThisPlotMs >= DAMAGE_TUNING.beetle.minDwellForRollbackSec*1000) {
+                      const plotId = ent.currentPlotId;
+                      const cdUntil = beetleCD[plotId] || 0;
                       if (currentNow >= cdUntil) {
-                        const pIdx = newState.plots.findIndex(p=>p.id===ent.lastPlotId);
+                        const pIdx = newState.plots.findIndex(p=>p.id===plotId);
                         if (pIdx >= 0) {
                           const crop = newState.plots[pIdx].crop;
                           if (crop) {
-                            const before = crop.progress;
                             const stageFloor = (crop.progress < 0.5) ? 0 : 0.5;
                             crop.progress = clamp(crop.progress - DAMAGE_TUNING.beetle.leaveRollback, stageFloor, 1);
-                            if (crop.stage === 'Mature' && crop.progress < 1) crop.stage = (crop.progress >= 0.5) ? 'Sprout' : 'Seed';
-                            beetleCD[ent.lastPlotId] = currentNow + DAMAGE_TUNING.beetle.rollbackCooldownSec*1000;
+                            if (crop.stage === 'Mature' && crop.progress < 1)
+                              crop.stage = (crop.progress >= 0.5) ? 'Sprout' : 'Seed';
+                            beetleCD[plotId] = currentNow + DAMAGE_TUNING.beetle.rollbackCooldownSec*1000;
                           }
                         }
                       }
                     }
-                    ent.targetPlotId = null;
+                    ent.lastPlotId = ent.currentPlotId;
+                    ent.currentPlotId = null;
+                    ent.dwellOnThisPlotMs = 0; // обнуляем счётчик для текущей грядки
                     continue;
                   }
-                  ent.targetPlotId = pid;
+
+                  // 2) насекомое над грядкой
                   ent.lastPlotId = pid;
+                  // если новая грядка — сбросить локальный таймер
+                  if (ent.currentPlotId !== pid) {
+                    ent.currentPlotId = pid;
+                    ent.dwellOnThisPlotMs = 0;
+                  }
+
                   const pIdx = newState.plots.findIndex(p=>p.id===pid);
                   if (pIdx < 0) continue;
                   const plot = newState.plots[pIdx];
                   if (!plot.crop) continue;
 
+                  // глобальный и локальный на этой грядке таймеры простоя
                   ent.dwellOnPlotMs = (ent.dwellOnPlotMs || 0) + 1000;
+                  ent.dwellOnThisPlotMs = (ent.dwellOnThisPlotMs || 0) + 1000;
 
                   if (L.type === 'bug') {
                     const mul = (plot.crop.shieldUntil && currentNow < plot.crop.shieldUntil) ? DAMAGE_TUNING.bug.shieldMultiplier : 1;
@@ -706,9 +721,11 @@
 
       const spendEnergy = (amount) => { if (gameState.eco.energy.current < amount) { showToast("Недостаточно энергии! ⚡", true); return false; } setGameState(prev => ({ ...prev, eco: { ...prev.eco, energy: { ...prev.eco.energy, current: prev.eco.energy.current - amount } } })); return true; }
       const handlePlotClick = (plot) => { if (plot.crop?.stage === 'Mature') handleHarvest(plot.id); else if (!plot.crop) handlePlant(plot.id); }
+      
       const handleInsectClick = (kind, id) => {
-        if (!spendEnergy(1)) return;
+        // не тратим энергию за уничтожение насекомых
         haptic('success');
+        let dropMsg = null;
         setGameState(prev => {
           const ns = JSON.parse(JSON.stringify(prev));
           const normalized = (kind === 'bee') ? 'beetle' : kind; // миграция
@@ -730,6 +747,9 @@
                   crop[target] = clamp(crop[target] + COMPENSATION.bugHealPct, 0, 100);
                 } else {
                   const nowTs = Date.now();
+                  // мгновенно снимаем ❄️
+                  crop.frozenUntil = 0;
+
                   if ((crop.growthBuffStacks || 0) < COMPENSATION.beetleBuff.maxStacks) {
                     crop.growthBuffStacks = (crop.growthBuffStacks || 0) + 1;
                   }
@@ -739,8 +759,8 @@
             }
           }
 
-          if (Math.random() < COMPENSATION.rareCoinChance) ns.eco.coins += 1;
-          if (Math.random() < COMPENSATION.rareEnergyChance) ns.eco.energy.current = Math.min(ns.eco.energy.max, ns.eco.energy.current + 1);
+          if (Math.random() < COMPENSATION.rareCoinChance) { ns.eco.coins += 1; dropMsg = (dropMsg ? dropMsg + ' · ' : '') + '+1💰'; }
+          if (Math.random() < COMPENSATION.rareEnergyChance) { ns.eco.energy.current = Math.min(ns.eco.energy.max, ns.eco.energy.current + 1); dropMsg = (dropMsg ? dropMsg + ' · ' : '') + '+1⚡'; }
 
           const todayKey = new Date().toDateString();
           ns.world.insectDaily ||= { day: todayKey, kills: 0, milestones: {10:false,25:false,50:false} };
@@ -754,7 +774,7 @@
 
           return ns;
         });
-        showToast(kind === 'bug' ? 'Уничтожена!' : 'Прогнан!');
+        showToast((kind === 'bug' ? 'Уничтожена!' : 'Прогнан!') + (dropMsg ? ` ${dropMsg}` : ''));
       }
 
       const handlePlant = (plotId) => {
