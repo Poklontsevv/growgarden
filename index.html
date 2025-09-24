@@ -217,6 +217,14 @@
     .panel-scroll::-webkit-scrollbar-thumb{ background: rgba(0,0,0,.2); border-radius: 2px; }
 
     .toast{ position: fixed; top: max(8px, calc(env(safe-area-inset-top) + 8px)); left: 50%; transform: translateX(-50%); z-index: 50; }
+    
+    .loot-layer-fixed{
+      position: fixed;
+      inset: 0;
+      z-index: 70;
+      pointer-events: none;
+    }
+
     .energy-timer{ font-size: 10px; line-height: 1; opacity: .85; }
     
     @keyframes grow-pop{0%{transform:scale(.7);opacity:0}100%{transform:scale(1);opacity:1}}
@@ -1013,7 +1021,7 @@
           if (entIndex === -1) return prev;
 
           const ent = list[entIndex];
-          dropPos = { x: ent.x, y: ent.y };
+          dropPos = { xPct: ent.x, yPct: ent.y };
           ent.hp -= 1;
 
           if (ent.hp <= 0) {
@@ -1049,10 +1057,16 @@
 
         if (isDead) {
           haptic('success');
-          const idDrop = Math.random().toString(36).slice(2);
-          setLootDrops(ds => [...ds, { id: idDrop, x: dropPos?.x ?? 50, y: dropPos?.y ?? 50, ...loot }]);
-          setTimeout(() => setLootDrops(ds => ds.filter(d => d.id !== idDrop)), 1200);
 
+          const bugLayerEl = playAreaRef.current?.querySelector('.bug-layer');
+          const lr = bugLayerEl?.getBoundingClientRect();
+          const left = lr ? (lr.left + (dropPos.xPct / 100) * lr.width)  : (evt.clientX || 0);
+          const top  = lr ? (lr.top  + (dropPos.yPct / 100) * lr.height) : (evt.clientY || 0);
+          
+          const idDrop = Math.random().toString(36).slice(2);
+          setLootDrops(ds => [...ds, { id: idDrop, left, top, ...loot }]);
+          setTimeout(() => setLootDrops(ds => ds.filter(d => d.id !== idDrop)), 1200);
+          
           const parts = [];
           if (loot.coins > 0) parts.push(`+${loot.coins}`);
           if (loot.energy > 0) parts.push(`+${loot.energy}`);
@@ -1107,7 +1121,7 @@
           } else if (action === 'shield') {
             if ((gameState.inv.items.PestControl || 0) < 1) { showToast("Нет защиты", true); return; }
             if (!spendEnergy(1)) return; haptic('light');
-            setGameState(prev => ({...prev, plots: prev.plots.map(p => (p.id === plotId && p.crop) ? {...p, crop: {...p, crop, shieldUntil: Date.now() + 10 * 60 * 1000 }} : p), inv: {...prev.inv, items: {...prev.inv.items, PestControl: prev.inv.items.PestControl - 1}}}));
+            setGameState(prev => ({...prev, plots: prev.plots.map(p => (p.id === plotId && p.crop) ? {...p, crop: {...p.crop, shieldUntil: Date.now() + 10 * 60 * 1000 }} : p), inv: {...prev.inv, items: {...prev.inv.items, PestControl: prev.inv.items.PestControl - 1}}}));
           } 
       }
 
@@ -1221,6 +1235,26 @@
             </div>
           </div>
 
+          <div className="loot-layer-fixed">
+            {lootDrops.map(d => {
+              const parts = [];
+              if (d.coins > 0) parts.push({ icon: 'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/coin.png',   fallback: '💰', text: `+${d.coins}` });
+              if (d.energy > 0) parts.push({ icon: 'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/energy.png', fallback: '⚡', text: `+${d.energy}` });
+              if (d.gem)       parts.push({ icon: 'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/gem.png',     fallback: '💎', text: '+1' });
+              if (parts.length === 0) return null;
+              return (
+                <span key={d.id} className="loot-drop" style={{ left: `${d.left}px`, top: `${d.top}px` }}>
+                  {parts.map((p, i) => (
+                    <span key={i} style={{display:'inline-flex', alignItems:'center', gap:'6px'}}>
+                      <img src={p.icon} alt="" onError={(e)=>{ e.currentTarget.replaceWith(document.createTextNode(p.fallback)); }} />
+                      <span>{p.text}</span>
+                    </span>
+                  ))}
+                </span>
+              );
+            })}
+          </div>
+
           <div className={`app-container text-gray-800 font-sans ${world.defense.isBlocked ? 'pointer-events-none' : ''}`}>
               <div className="play-area" ref={playAreaRef}>
                   <div className="plots-wrap">
@@ -1240,25 +1274,6 @@
                           )}
                         </span>
                       ))}
-                      {lootDrops.map(d => {
-                        const parts = [];
-                        if (d.coins > 0) parts.push({ icon: 'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/coin.png', fallback: '💰', text: `+${d.coins}` });
-                        if (d.energy > 0) parts.push({ icon: 'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/energy.png', fallback: '⚡', text: `+${d.energy}` });
-                        if (d.gem)       parts.push({ icon: 'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/gem.png',   fallback: '💎', text: '+1' });
-
-                        if (parts.length === 0) return null;
-
-                        return (
-                          <span key={d.id} className="loot-drop" style={{left:`${d.x}%`, top:`${d.y}%`}}>
-                            {parts.map((p, i) => (
-                              <span key={i} style={{display:'inline-flex', alignItems:'center', gap:'6px'}}>
-                                <img src={p.icon} alt="" onError={(e)=>{ e.currentTarget.replaceWith(document.createTextNode(p.fallback)); }} />
-                                <span>{p.text}</span>
-                              </span>
-                            ))}
-                          </span>
-                        );
-                      })}
                     </div>
 
                     <div className="plots">
