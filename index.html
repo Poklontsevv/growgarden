@@ -426,11 +426,26 @@
     const plantedCount = (state) =>
       state.plots.reduce((acc, p) => acc + (p.crop ? 1 : 0), 0);
 
+    const ONE_WAVE_ACTIVE = (world) => {
+      const b = world.bugAttack?.phase;
+      const e = world.beetleAttack?.phase;
+      const active = (p) => p && p !== 'idle';
+      return active(b) || active(e);
+    };
+
     const visibleYPct = (paEl) => {
-      if (!paEl) return 50;
-      const { scrollTop, clientHeight, scrollHeight } = paEl;
-      const yPx = scrollTop + Math.random() * clientHeight;
-      return clamp((yPx / scrollHeight) * 100, 2, 98);
+      const grid = document.querySelector('.plots');
+      if (!paEl || !grid) return 50;
+
+      const layerRect = paEl.getBoundingClientRect();
+      const gridRect  = grid.getBoundingClientRect();
+
+      // Переводим видимый интервал грядок в проценты относительно bug-layer
+      const topPct = clamp(((gridRect.top - layerRect.top) / layerRect.height) * 100, 2, 98);
+      const botPct = clamp(((gridRect.bottom - layerRect.top) / layerRect.height) * 100, 2, 98);
+
+      const yPct = topPct + Math.random() * Math.max(1, botPct - topPct);
+      return clamp(yPct, topPct, botPct);
     };
 
     const ICONS = {
@@ -670,9 +685,9 @@
                     ny += Math.sin(newWaveT * ent.waveOmega) * ent.waveAmp * dt * 5;
                     ny = clamp(ny, 2, 98);
                     return { ...ent, x: nx, y: ny, waveT: newWaveT };
-                } else {
-                    ny = clamp(ent.y + (Math.random() - 0.5) * 0.5, 2, 98);
-                    return { ...ent, x: nx, y: ny };
+                } else { // caterpillar
+                    // прямолинейно по X, y не колышем
+                    return { ...ent, x: nx, y: ent.y };
                 }
               });
 
@@ -711,39 +726,52 @@
               if (currentNow - (newState.world.lastOrdersUpdate || 0) >= Ticks.ORDERS) { if (Math.max(0, 3 - newState.orders.length) > 0) newState.orders.push(...generateOrders(1)); newState.world.lastOrdersUpdate = currentNow; }
               if (currentNow - (newState.world.lastWeatherUpdate || 0) >= Ticks.WEATHER) { newState.world.weather = ['Sunny', 'Rainy', 'Cloudy'][randInt(0,2)]; newState.world.lastWeatherUpdate = currentNow; if (newState.world.weather === 'Sunny' && Math.random() < 0.35) { newState.world.heatwaveUntil = currentNow + rand(90,180)*1000; } }
               
-              const handleAttack = (type) => {
+              const handleAttack = (kind) => {
                 if (plantedCount(newState) < 2) return;
 
-                const nodeKey = type === 'bug' ? 'bugAttack' : 'beetleAttack';
+                const nodeKey = kind === 'bug' ? 'bugAttack' : 'beetleAttack';
                 const A = newState.world[nodeKey];
 
                 switch (A.phase) {
                   case 'idle': {
-                    if (currentNow > A.cooldownUntil && Math.random() < 0.12 && currentNow >= newState.world.globalEventLockUntil) {
+                    // стартовать можно только если ВООБЩЕ нет другой волны ни в какой фазе
+                    if (!ONE_WAVE_ACTIVE(newState.world) &&
+                        currentNow > A.cooldownUntil &&
+                        Math.random() < 0.12 &&
+                        currentNow >= newState.world.globalEventLockUntil) {
                       A.phase = 'announce';
-                      A.announceUntil = currentNow + WAVE.announceMs[0];
-                      newState.world.globalEventLockUntil = currentNow + WAVE.announceMs[0] + rand(...WAVE.activeMs);
+                      A.announceUntil = currentNow + 5000; // ровно 5 секунд
+                      // блокировать экран в анонсе НЕ НУЖНО
+                      // глобальный лок: пока идёт анонс + активная фаза
+                      const activeDuration = rand(...WAVE.activeMs);
+                      newState.world.globalEventLockUntil = A.announceUntil + activeDuration;
+                      A.plannedActiveDuration = activeDuration;
                     }
                     break;
                   }
+
                   case 'announce': {
+                    // только по истечении 5 сек — в актив
                     if (currentNow >= A.announceUntil) {
                       A.phase = 'active';
-                      const duration = rand(...WAVE.activeMs);
+                      const duration = A.plannedActiveDuration || rand(...WAVE.activeMs);
                       A.endsAt = currentNow + duration;
                       A.nextSpawnAt = currentNow;
-                      A.loot = { ...WAVE.lootBudget };
-                      A.stats = { waterLost: 0, fertLost: 0, freezeMs: 0, rollback: 0, affected: {} };
+                      A.loot = { ...WAVE.lootBudget }; // бюджет лута на волну
+                      A.stats = { stolen: 0, affected: {} };
 
+                      // теперь блокируем
                       newState.world.defense.isBlocked = true;
                       newState.world.defense.dimUntil = A.endsAt;
-                      
+
                       const totalRaw = Object.values(newState.inv.raw).reduce((s, q) => s + q, 0);
+                      newState.world.defense.warehouseLossThisWave = 0;
                       newState.world.defense.warehouseLossLimitAbs = Math.ceil(totalRaw * WAVE.warehouse.waveLossPctMax);
                       newState.world.defense.warehouseLossByCrop = {};
                     }
                     break;
                   }
+
                   case 'active': {
                     if (currentNow >= A.endsAt) {
                       A.phase = 'drain';
@@ -751,33 +779,35 @@
                     } else if (currentNow >= A.nextSpawnAt) {
                       const aliveCount = newState.world.bugs.length + newState.world.beetles.length;
                       if (aliveCount < WAVE.capAlive) {
-                          const waveSize = randInt(1,3);
-                          for(let i=0; i<waveSize; i++) {
-                            if(newState.world.bugs.length + newState.world.beetles.length >= WAVE.capAlive) break;
-                            
-                            const isCaterpillar = Math.random() < 0.55;
-                            const isBig = Math.random() < 0.33;
-                            const isElite = Math.random() < WAVE.eliteChance;
+                        const waveSize = randInt(1, 3);
+                        for (let i = 0; i < waveSize; i++) {
+                          if (newState.world.bugs.length + newState.world.beetles.length >= WAVE.capAlive) break;
 
-                            const kind = isCaterpillar ? 'caterpillar' : 'beetle';
-                            const sizeType = isBig ? 'big' : 'small';
-                            const list = isCaterpillar ? newState.world.bugs : newState.world.beetles;
-                            
-                            const hp = WAVE.hp[sizeType] * (isElite ? WAVE.hp.eliteMul : 1);
-                            const speedRange = WAVE.speed[kind][sizeType];
-                            const speed = rand(...speedRange) * (isElite ? 1.25 : 1) * INSECT_TUNING.speedScale;
-                            
-                            const direction = (Math.random() < 0.5) ? 1 : -1;
-                            const x = direction === 1 ? -12 : 112;
-                            const vx = speed * direction;
-                            
-                            list.push({
-                                id: `${currentNow}-${i}-${Math.random()}`, type: kind, subType: sizeType, isElite, hp: Math.round(hp), maxHp: Math.round(hp),
-                                x, y: visibleYPct(playAreaRef.current), vx, vy: 0, size: rand(INSECT_TUNING.sizeMinPct, INSECT_TUNING.sizeMaxPct) * (isElite ? 1.15 : 1),
-                                expiresAt: currentNow + rand(12000, 18000), dwellOnPlotMs: 0, lastPlotId: null, currentPlotId: null, dwellOnThisPlotMs: 0,
-                                waveT: 0, waveAmp: rand(2, 4), waveOmega: rand(0.5, 1.0),
-                            });
-                          }
+                          const isCaterpillar = (kind === 'bug'); // фиксируем тип волны!
+                          const sizeType = Math.random() < 0.33 ? 'big' : 'small';
+                          const isElite = Math.random() < WAVE.eliteChance;
+
+                          const list = isCaterpillar ? newState.world.bugs : newState.world.beetles;
+                          const hp = WAVE.hp[sizeType] * (isElite ? WAVE.hp.eliteMul : 1);
+                          const speedRange = WAVE.speed[isCaterpillar ? 'caterpillar' : 'beetle'][sizeType];
+                          const speed = rand(...speedRange) * (isElite ? 1.25 : 1) * INSECT_TUNING.speedScale;
+
+                          // НАПРАВЛЕНИЕ: гусеницы слева -> вправо; жуки справа -> влево (зигзаг)
+                          const x = isCaterpillar ? -12 : 112;
+                          const vx = isCaterpillar ? Math.abs(speed) : -Math.abs(speed);
+
+                          list.push({
+                            id: `${currentNow}-${i}-${Math.random()}`,
+                            type: isCaterpillar ? 'caterpillar' : 'beetle',
+                            subType: sizeType, isElite,
+                            hp: Math.round(hp), maxHp: Math.round(hp),
+                            x, y: visibleYPct(playAreaRef.current), vx, vy: 0,
+                            size: rand(INSECT_TUNING.sizeMinPct, INSECT_TUNING.sizeMaxPct) * (isElite ? 1.15 : 1),
+                            expiresAt: currentNow + rand(12000, 18000),
+                            dwellOnPlotMs: 0, lastPlotId: null, currentPlotId: null, dwellOnThisPlotMs: 0,
+                            waveT: 0, waveAmp: rand(2, 4), waveOmega: rand(0.5, 1.0),
+                          });
+                        }
                       }
                       A.nextSpawnAt = currentNow + rand(...WAVE.spawnEveryMs);
                     }
@@ -786,28 +816,45 @@
                 }
               };
               
-              if (newState.world.bugAttack.phase === 'idle' && newState.world.beetleAttack.phase === 'idle') {
-                if (Math.random() < 0.5) handleAttack('bug');
-                else handleAttack('beetle');
-              } else {
-                 handleAttack('bug');
-                 handleAttack('beetle');
-              }
-
-
-              const finalizeWave = (typeKey) => {
-                const A = newState.world[typeKey];
+              const finalizeWave = (key) => {
+                const A = newState.world[key];
                 const noEnemies = newState.world.bugs.length === 0 && newState.world.beetles.length === 0;
 
                 if (A.phase === 'drain' && noEnemies) {
+                  // Разблокируем управление сразу после реального конца
                   newState.world.defense.isBlocked = false;
                   newState.world.defense.warehouseGuardActive = false;
-                  
-                  // ... existing report generation
+
+                  // Собираем короткий отчёт об уроне этой волны
+                  const stolen = newState.world.defense.warehouseLossThisWave || 0;
+                  if (stolen > 0) {
+                    (newState.world.damageReports ||= []).push({
+                      id: `rep-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                      text: `Потери со склада: -${stolen} ед.`,
+                    });
+                  }
+
+                  // Сбрасываем волну
                   A.phase = 'idle';
                   A.cooldownUntil = currentNow + rand(50000, 120000);
+                  A.loot = null;
+                  A.stats = null;
+                  A.plannedActiveDuration = 0;
                 }
               };
+              
+              // Взаимоисключающие события
+              const BA = newState.world.bugAttack.phase;
+              const EA = newState.world.beetleAttack.phase;
+
+              // Если какая-то волна уже не idle — обслуживаем только её
+              if (BA !== 'idle')       handleAttack('bug');
+              else if (EA !== 'idle')  handleAttack('beetle');
+              else {
+                // обе idle — случайно стартуем одну
+                if (Math.random() < 0.5) handleAttack('bug');
+                else                      handleAttack('beetle');
+              }
 
               finalizeWave('bugAttack');
               finalizeWave('beetleAttack');
@@ -888,28 +935,56 @@
 
       const handleInsectClick = (evt, kind, id) => {
         let isDead = false;
+        let lootText = '';
         setGameState(prev => {
           const ns = JSON.parse(JSON.stringify(prev));
           const listKey = kind === 'caterpillar' ? 'bugs' : 'beetles';
           const list = ns.world[listKey];
           const entIndex = list.findIndex(i => i.id === id);
-          if(entIndex === -1) return prev;
-          
+          if (entIndex === -1) return prev;
+
           const ent = list[entIndex];
           ent.hp -= 1;
-          
+
           if (ent.hp <= 0) {
             isDead = true;
+            // ЛУТ
+            const waveKey = listKey === 'bugs' ? 'bugAttack' : 'beetleAttack';
+            const W = ns.world[waveKey];
+            if (W?.phase === 'active' && W.loot) {
+              // монеты
+              const minC = WAVE.lootBudget.coins[0];
+              const maxC = WAVE.lootBudget.coins[1];
+              const coins = randInt(minC, maxC);
+              ns.eco.coins += coins;
+              lootText += `+${coins}💰 `;
+
+              // шанс энергии
+              const minE = WAVE.lootBudget.energy[0];
+              const maxE = WAVE.lootBudget.energy[1];
+              if (maxE > 0 && Math.random() < 0.5) {
+                const energy = randInt(minE, maxE);
+                ns.eco.energy.current = clamp(ns.eco.energy.current + energy, 0, ns.eco.energy.max);
+                lootText += energy ? `+${energy}⚡ ` : '';
+              }
+
+              // редкий гем
+              if (Math.random() < WAVE.lootBudget.gemRareChance) {
+                ns.eco.gems += 1;
+                lootText += '+1💎';
+              }
+            }
+
             ns.world[listKey] = list.filter(i => i.id !== id);
           } else {
             list[entIndex] = ent;
           }
           return ns;
         });
-        
+
         if (isDead) {
           haptic('success');
-          addFloater(evt.clientX, evt.clientY, `+10💰`);
+          addFloater(evt.clientX, evt.clientY, lootText.trim() || '+10💰'); // на всякий случай
         } else {
           haptic('light');
         }
