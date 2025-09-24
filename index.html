@@ -303,6 +303,22 @@
       15%  { opacity: 1; transform: translate(-50%, -24%) scale(1); }
       100% { opacity: 0; transform: translate(-50%, -70%) scale(1.05); }
     }
+    .loot-drop{
+      position:absolute;
+      z-index: 35;
+      font-weight:800;
+      font-size:14px;
+      color:#fff;
+      text-shadow:0 1px 2px rgba(0,0,0,.35);
+      transform: translate(-50%, -50%);
+      pointer-events:none;
+      animation: loot-up 900ms ease-out forwards;
+    }
+    @keyframes loot-up{
+      0%   { opacity: 0; transform: translate(-50%,-10%) scale(.9); }
+      15%  { opacity: 1; transform: translate(-50%,-24%) scale(1); }
+      100% { opacity: 0; transform: translate(-50%,-70%) scale(1.05); }
+    }
     .badge {
       margin-left: 6px;
       padding: 1px 6px;
@@ -434,16 +450,27 @@
     };
 
     const visibleYPct = (paEl) => {
+      // paEl = .play-area
       const grid = document.querySelector('.plots');
+      const hud  = document.querySelector('.hud');
+      const panel= document.querySelector('.bottom-panel');
       if (!paEl || !grid) return 50;
 
-      const layerRect = paEl.getBoundingClientRect();
-      const gridRect  = grid.getBoundingClientRect();
+      // Геометрия слоёв
+      const layerRect = paEl.querySelector('.bug-layer').getBoundingClientRect();
+      const paRect    = paEl.getBoundingClientRect();
+      const hudBottom = hud ? hud.getBoundingClientRect().bottom : paRect.top;
+      const panelTop  = panel ? panel.getBoundingClientRect().top : paRect.bottom;
 
-      // Переводим видимый интервал грядок в проценты относительно bug-layer
-      const topPct = clamp(((gridRect.top - layerRect.top) / layerRect.height) * 100, 2, 98);
-      const botPct = clamp(((gridRect.bottom - layerRect.top) / layerRect.height) * 100, 2, 98);
+      // Реально видимый вертикальный интервал внутри bug-layer
+      const visTopPx = Math.max(paRect.top, hudBottom);
+      const visBotPx = Math.min(paRect.bottom, panelTop);
 
+      // в проценты слоя
+      const topPct = clamp(((visTopPx - layerRect.top) / layerRect.height) * 100, 2, 98);
+      const botPct = clamp(((visBotPx - layerRect.top) / layerRect.height) * 100, 2, 98);
+
+      // Случайная высота в этом коридоре
       const yPct = topPct + Math.random() * Math.max(1, botPct - topPct);
       return clamp(yPct, topPct, botPct);
     };
@@ -516,6 +543,45 @@
         Storage: { name: 'Склад', baseCost: 25, costScale: 15, effect: (lvl) => `+20 вмест.` },
         EnergyRegen: { name: 'Реген. энергии', baseCost: 30, costScale: 15, effect: (lvl) => `+0.5 ⚡/мин` },
         PlotSlots: { name: 'Доп. грядки', baseCost: 50, costScale: 30, effect: (lvl) => `+1 грядка (макс. 16)` },
+    }
+
+    function endWaveNow(ns, key, nowTs) {
+      const A = ns.world[key];
+
+      // Разблокируем и очищаем врагов
+      ns.world.bugs = [];
+      ns.world.beetles = [];
+      ns.world.defense.isBlocked = false;
+      ns.world.defense.warehouseGuardActive = false;
+
+      // Считаем урон
+      const reports = [];
+      const stolen = ns.world.defense.warehouseLossThisWave || 0;
+      if (stolen > 0) reports.push(`Со склада пропало: -${stolen} ед.`);
+
+      // Повреждения грядок (лёгкая «боль» волны)
+      ns.plots.forEach(p => {
+        if (p.crop && p.crop.stage !== 'Mature') {
+          if (Math.random() < 0.3) {
+            reports.push(`${CROP_DATA[p.crop.type].name} повреждены и погибают`);
+            p.crop = undefined;
+          }
+        }
+      });
+
+      if (reports.length) {
+        (ns.world.damageReports ||= []).push({
+          id: `rep-${nowTs}-${Math.random().toString(36).slice(2)}`,
+          text: reports.join(' • ')
+        });
+      }
+
+      // Сброс состояния волны
+      A.phase = 'idle';
+      A.cooldownUntil = nowTs + rand(50000, 120000);
+      A.loot = null;
+      A.stats = null;
+      A.plannedActiveDuration = 0;
     }
 
     const calculateYield = (crop) => { const d = CROP_DATA[crop.type]; const qMul = 0.8 + 0.4 * (crop.quality - 1); const minY = Math.max(1, Math.round(d.baseYield)); const maxY = Math.max(minY, Math.round(d.baseYield * (1 + qMul))); return randInt(minY, maxY); };
@@ -614,6 +680,7 @@
       const [toast, setToast] = useState(null);
       const [now, setNow] = useState(Date.now());
       const [floaters, setFloaters] = useState([]);
+      const [lootDrops, setLootDrops] = useState([]);
       const [coinsAnimKey, setCoinsAnimKey] = useState(0);
       const [damageBanners, setDamageBanners] = useState([]);
       const [lockedOrders, setLockedOrders] = useState({});
@@ -774,8 +841,8 @@
 
                   case 'active': {
                     if (currentNow >= A.endsAt) {
-                      A.phase = 'drain';
-                      A.drainStartedAt = currentNow;
+                      // МГНОВЕННО заканчиваем волну: чистим врагов и показываем баннер урона
+                      endWaveNow(newState, nodeKey, currentNow);
                     } else if (currentNow >= A.nextSpawnAt) {
                       const aliveCount = newState.world.bugs.length + newState.world.beetles.length;
                       if (aliveCount < WAVE.capAlive) {
@@ -816,46 +883,6 @@
                 }
               };
               
-              const finalizeWave = (key) => {
-                const A = newState.world[key];
-                const noEnemies = newState.world.bugs.length === 0 && newState.world.beetles.length === 0;
-
-                if (A.phase === 'drain' && noEnemies) {
-                  newState.world.defense.isBlocked = false;
-                  newState.world.defense.warehouseGuardActive = false;
-
-                  const reports = [];
-                  const stolen = newState.world.defense.warehouseLossThisWave || 0;
-                  if (stolen > 0) {
-                    reports.push(`Со склада пропало: -${stolen} ед.`);
-                  }
-
-                  // Проверим все грядки на повреждения
-                  newState.plots.forEach(p => {
-                    if (p.crop && p.crop.stage !== 'Mature') {
-                      // 30% шанс, что грядку «покусали» насекомые
-                      if (Math.random() < 0.3) {
-                        reports.push(`${CROP_DATA[p.crop.type].name} повреждены и погибают`);
-                        p.crop = undefined; // сожрали полностью
-                      }
-                    }
-                  });
-
-                  if (reports.length) {
-                    (newState.world.damageReports ||= []).push({
-                      id: `rep-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-                      text: reports.join(' • '),
-                    });
-                  }
-
-                  A.phase = 'idle';
-                  A.cooldownUntil = currentNow + rand(50000, 120000);
-                  A.loot = null;
-                  A.stats = null;
-                  A.plannedActiveDuration = 0;
-                }
-              };
-              
               // Взаимоисключающие события
               const BA = newState.world.bugAttack.phase;
               const EA = newState.world.beetleAttack.phase;
@@ -868,9 +895,6 @@
                 if (Math.random() < 0.5) handleAttack('bug');
                 else                      handleAttack('beetle');
               }
-
-              finalizeWave('bugAttack');
-              finalizeWave('beetleAttack');
 
               const escapedInsects = [];
               const activeBugs = [], activeBeetles = [];
@@ -949,6 +973,8 @@
       const handleInsectClick = (evt, kind, id) => {
         let isDead = false;
         let lootText = '';
+        let dropPos = null;
+
         setGameState(prev => {
           const ns = JSON.parse(JSON.stringify(prev));
           const listKey = kind === 'caterpillar' ? 'bugs' : 'beetles';
@@ -957,37 +983,31 @@
           if (entIndex === -1) return prev;
 
           const ent = list[entIndex];
+          dropPos = { x: ent.x, y: ent.y };        // <-- координаты смерти
           ent.hp -= 1;
 
           if (ent.hp <= 0) {
             isDead = true;
-            // ЛУТ
             const waveKey = listKey === 'bugs' ? 'bugAttack' : 'beetleAttack';
             const W = ns.world[waveKey];
             if (W?.phase === 'active' && W.loot) {
-              // монеты
-              const minC = WAVE.lootBudget.coins[0];
-              const maxC = WAVE.lootBudget.coins[1];
-              const coins = randInt(minC, maxC);
+              const coins = randInt(WAVE.lootBudget.coins[0], WAVE.lootBudget.coins[1]);
               ns.eco.coins += coins;
-              lootText += `+${coins}💰 `;
 
-              // шанс энергии
-              const minE = WAVE.lootBudget.energy[0];
-              const maxE = WAVE.lootBudget.energy[1];
-              if (maxE > 0 && Math.random() < 0.5) {
-                const energy = randInt(minE, maxE);
+              let energy = 0;
+              if (WAVE.lootBudget.energy[1] > 0 && Math.random() < 0.5) {
+                energy = randInt(WAVE.lootBudget.energy[0], WAVE.lootBudget.energy[1]);
                 ns.eco.energy.current = clamp(ns.eco.energy.current + energy, 0, ns.eco.energy.max);
-                lootText += energy ? `+${energy}⚡ ` : '';
               }
 
-              // редкий гем
+              let gem = false;
               if (Math.random() < WAVE.lootBudget.gemRareChance) {
                 ns.eco.gems += 1;
-                lootText += '+1💎';
+                gem = true;
               }
+              // текст для чипа
+              lootText = `${coins ? `+${coins}💰 ` : ''}${energy ? `+${energy}⚡ ` : ''}${gem ? `+1💎` : ''}`.trim();
             }
-
             ns.world[listKey] = list.filter(i => i.id !== id);
           } else {
             list[entIndex] = ent;
@@ -997,7 +1017,13 @@
 
         if (isDead) {
           haptic('success');
-          addFloater(evt.clientX, evt.clientY, lootText.trim() || '+10💰'); // на всякий случай
+          // 1) «чип» лута в точке смерти
+          const idDrop = Math.random().toString(36).slice(2);
+          setLootDrops(ds => [...ds, { id: idDrop, x: dropPos?.x ?? 50, y: dropPos?.y ?? 50, text: lootText || '+10💰' }]);
+          setTimeout(() => setLootDrops(ds => ds.filter(d => d.id !== idDrop)), 900);
+
+          // 2) небольшой floater под палец (оставил как раньше)
+          addFloater(evt.clientX, evt.clientY, lootText.trim() || '+10💰');
         } else {
           haptic('light');
         }
@@ -1176,6 +1202,11 @@
                                 {Array.from({length: Math.ceil(ent.maxHp)}).map((_,i) => <div key={i} className={`bug-hp-dot ${i < ent.hp ? 'bug-hp-dot--filled' : ''}`} />)}
                             </div>
                           )}
+                        </span>
+                      ))}
+                      {lootDrops.map(d => (
+                        <span key={d.id} className="loot-drop" style={{ left: `${d.x}%`, top: `${d.y}%` }}>
+                          {d.text}
                         </span>
                       ))}
                     </div>
