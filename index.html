@@ -139,18 +139,20 @@
     }
     .toolbar-btn:active{ transform:scale(.96); }
     .plot-timer{
-      position: absolute;
-      top: 4px;
-      left: 50%;
-      transform: translateX(-50%);
-      background: rgba(0,0,0,0.35);
-      color: white;
-      font-size: 12px;
-      font-weight: 600;
-      padding: 2px 6px;
-      border-radius: 9999px;
-      z-index: 15;
+      position:absolute;
+      top:4px;
+      left:50%;
+      transform:translateX(-50%);
+      background:rgba(0,0,0,.45);
+      color:#fff;
+      font-size:12px;
+      font-weight:700;
+      padding:2px 10px;
+      border-radius:9999px;
+      z-index:15;
+      white-space:nowrap;
     }
+    .harvest-count{ display:none; }
     
     .plot{
       position: relative;
@@ -248,7 +250,7 @@
       pointer-events:none;
       position:absolute;
       inset:0;
-      z-index:32; /* Changed from 20 */
+      z-index:45;
     }
     /* контейнер одного насекомого */
     .bug{
@@ -279,12 +281,13 @@
       object-fit: contain;
       pointer-events: none;      /* чтобы клик ловил .bug */
     }
-    .bug-hp {
-        position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%);
-        display: flex; gap: 2px;
-    }
+    .bug-hp{ position:absolute; left:50%; transform:translateX(-50%); bottom:clamp(2px, 0.8vh, 8px); display:flex; gap:2px; }
     .bug-hp-dot { width: 6px; height: 6px; border-radius: 999px; background: rgba(255,255,255,.8); border: 1px solid rgba(0,0,0,.5); }
     .bug-hp-dot--filled { background: #f87171; }
+    @media (max-width: 420px){
+      .bug{ padding:18px; margin-left:-18px; margin-top:-18px; }
+      .bug-hp{ bottom:2px; gap:2px; }
+    }
 
 
     .floater {
@@ -304,16 +307,14 @@
       100% { opacity: 0; transform: translate(-50%, -70%) scale(1.05); }
     }
     .loot-drop{
-      position:absolute;
-      z-index: 38; /* Changed from 35 */
-      font-weight:800;
-      font-size:14px;
-      color:#fff;
-      text-shadow:0 1px 2px rgba(0,0,0,.35);
-      transform: translate(-50%, -50%);
-      pointer-events:none;
-      animation: loot-up 900ms ease-out forwards;
+      position:absolute; z-index:46; pointer-events:none;
+      display:inline-flex; align-items:center; gap:6px;
+      background:rgba(0,0,0,.55); border-radius:9999px; padding:2px 8px;
+      font-weight:800; font-size:14px; color:#fff; text-shadow:0 1px 2px rgba(0,0,0,.35);
+      transform:translate(-50%,-50%); animation:loot-up 1200ms ease-out forwards;
     }
+    .loot-drop img{ width:16px; height:16px; object-fit:contain; }
+
     @keyframes loot-up{
       0%   { opacity: 0; transform: translate(-50%,-10%) scale(.9); }
       15%  { opacity: 1; transform: translate(-50%,-24%) scale(1); }
@@ -564,34 +565,38 @@
     function endWaveNow(ns, key, nowTs) {
       const A = ns.world[key];
 
-      // Разблокируем и очищаем врагов
       ns.world.bugs = [];
       ns.world.beetles = [];
       ns.world.defense.isBlocked = false;
       ns.world.defense.warehouseGuardActive = false;
+      ns.plots.forEach(p => { if (p.crop) p.crop.timeLeftCached = null; });
 
-      // Считаем урон
+      if (A.stats && !isBugWave && A.startedAt) {
+        A.stats.growthDelaySec += Math.round((nowTs - A.startedAt)/1000);
+      }
+
       const reports = [];
-      const stolen = ns.world.defense.warehouseLossThisWave || 0;
-      if (stolen > 0) reports.push(`Со склада пропало: -${stolen} ед.`);
-
-      // Повреждения грядок (лёгкая «боль» волны)
-      ns.plots.forEach(p => {
-        if (p.crop && p.crop.stage !== 'Mature') {
-          if (Math.random() < 0.3) {
-            reports.push(`${CROP_DATA[p.crop.type].name} повреждены и погибают`);
-            p.crop = undefined;
-          }
+      const isBugWave = (key === 'bugAttack');
+      if (A.stats){
+        if (isBugWave){
+          const eatenList = Object.entries(A.stats.eatenByCrop || {})
+            .map(([crop, n]) => `${n} (${CROP_DATA[crop]?.name || crop})`).join(', ') || '0';
+          reports.unshift(
+            `Уничтожено гусениц: ${A.stats.killed}, Пропущено гусениц: ${A.stats.escaped}, Съедено: ${eatenList}`
+          );
+        } else {
+          reports.unshift(
+            `Уничтожено жуков: ${A.stats.killed}, Пропущено жуков: ${A.stats.escaped}, Время роста растений увеличено на ${fmtMMSS(A.stats.growthDelaySec)}`
+          );
         }
-      });
-
-      const text = reports.length ? reports.join(' • ') : 'Атака завершена. Ущерб: 0';
+      }
+      
+      const text = reports.join(' • ') || (isBugWave ? 'Атака гусениц завершена.' : 'Атака жуков завершена.');
       (ns.world.damageReports ||= []).push({
         id: `rep-${nowTs}-${Math.random().toString(36).slice(2)}`,
         text
       });
 
-      // Сброс состояния волны
       A.phase = 'idle';
       A.cooldownUntil = nowTs + rand(50000, 120000);
       A.loot = null;
@@ -631,6 +636,11 @@
       const remain = Math.max(0, target - crop.progress);
       const perSec = Math.max(1e-6, basePerSec);
       return Math.ceil(remain / perSec);
+    }
+
+    function secondsToNextStageUI(crop, world){
+      if (world.defense?.isBlocked && crop.timeLeftCached != null) return crop.timeLeftCached;
+      return secondsToNextStage(crop, world);
     }
 
     const createInitialState = () => ({
@@ -837,7 +847,14 @@
                       A.endsAt = currentNow + duration;
                       A.nextSpawnAt = currentNow;
                       A.loot = { ...WAVE.lootBudget };
-                      A.stats = { stolen: 0, affected: {} };
+                      A.stats = { killed:0, escaped:0, eatenByCrop:{}, growthDelaySec:0 };
+                      A.startedAt = currentNow;
+
+                      newState.plots.forEach(p=>{
+                        if (p.crop && p.crop.stage!=='Mature'){
+                          p.crop.timeLeftCached = secondsToNextStage(p.crop, newState.world);
+                        }
+                      });
 
                       newState.world.defense.isBlocked = true;
                       newState.world.defense.dimUntil = A.endsAt;
@@ -912,36 +929,42 @@
               newState.world.beetles = activeBeetles;
 
               escapedInsects.forEach(ent => {
-                  if (ent.type !== 'caterpillar') return;
-                  const totalRaw = Object.values(newState.inv.raw).reduce((s,q)=>s+q,0);
-                  if (newState.world.defense.warehouseLossThisWave >= newState.world.defense.warehouseLossLimitAbs || totalRaw === 0) return;
-                  const availableCrops = Object.keys(newState.inv.raw).filter(k=>newState.inv.raw[k]>0);
-                  if (availableCrops.length === 0) return;
-                  
-                  const cropToSteal = availableCrops[randInt(0, availableCrops.length - 1)];
-                  const cropData = CROP_DATA[cropToSteal];
-                  let lossAmount = randInt(1, 2);
+                  const waveKeyForEscaped = ent.type === 'caterpillar' ? 'bugAttack' : 'beetleAttack';
+                  const A_escaped = newState.world[waveKeyForEscaped];
+                  if(A_escaped?.stats) A_escaped.stats.escaped++;
 
-                  const lossSoFar = newState.world.defense.warehouseLossByCrop[cropToSteal] || 0;
-                  if (cropData.rarity === 'rare' && lossSoFar >= WAVE.warehouse.perRareMax) return;
-                  if (cropData.rarity === 'epic' && lossSoFar >= WAVE.warehouse.perEpicMax) return;
-                  if (cropData.rarity === 'rare' || cropData.rarity === 'epic') lossAmount = 1;
+                  if (ent.type === 'caterpillar') {
+                    const A = newState.world.bugAttack;
+                    const totalRaw = Object.values(newState.inv.raw).reduce((s,q)=>s+q,0);
+                    if (newState.world.defense.warehouseLossThisWave >= newState.world.defense.warehouseLossLimitAbs || totalRaw === 0) return;
+                    const availableCrops = Object.keys(newState.inv.raw).filter(k=>newState.inv.raw[k]>0);
+                    if (availableCrops.length === 0) return;
+                    
+                    const cropToSteal = availableCrops[randInt(0, availableCrops.length - 1)];
+                    const cropData = CROP_DATA[cropToSteal];
+                    let lossAmount = randInt(1, 2);
 
-                  const storageLvl = newState.upgrades.Storage || 0;
-                  const passiveRed = Math.min(WAVE.warehouse.maxPassiveReduce, storageLvl * WAVE.warehouse.storagePassiveReducePerLvl);
-                  let finalMultiplier = 1.0 - passiveRed;
-                  if (newState.world.defense.warehouseGuardActive) finalMultiplier *= WAVE.warehouse.guardReduceMul;
-                  
-                  if (Math.random() <= finalMultiplier) {
-                      const actualLoss = Math.min(lossAmount, newState.inv.raw[cropToSteal]);
-                      if (actualLoss > 0) {
-                          newState.inv.raw[cropToSteal] -= actualLoss;
-                          newState.world.defense.warehouseLossThisWave += actualLoss;
-                          newState.world.defense.warehouseLossByCrop[cropToSteal] = (newState.world.defense.warehouseLossByCrop[cropToSteal] || 0) + actualLoss;
-                      }
+                    const lossSoFar = newState.world.defense.warehouseLossByCrop[cropToSteal] || 0;
+                    if (cropData.rarity === 'rare' && lossSoFar >= WAVE.warehouse.perRareMax) return;
+                    if (cropData.rarity === 'epic' && lossSoFar >= WAVE.warehouse.perEpicMax) return;
+                    if (cropData.rarity === 'rare' || cropData.rarity === 'epic') lossAmount = 1;
+
+                    const storageLvl = newState.upgrades.Storage || 0;
+                    const passiveRed = Math.min(WAVE.warehouse.maxPassiveReduce, storageLvl * WAVE.warehouse.storagePassiveReducePerLvl);
+                    let finalMultiplier = 1.0 - passiveRed;
+                    if (newState.world.defense.warehouseGuardActive) finalMultiplier *= WAVE.warehouse.guardReduceMul;
+                    
+                    if (Math.random() <= finalMultiplier) {
+                        const actualLoss = Math.min(lossAmount, newState.inv.raw[cropToSteal]);
+                        if (actualLoss > 0) {
+                            newState.inv.raw[cropToSteal] -= actualLoss;
+                            newState.world.defense.warehouseLossThisWave += actualLoss;
+                            newState.world.defense.warehouseLossByCrop[cropToSteal] = (newState.world.defense.warehouseLossByCrop[cropToSteal] || 0) + actualLoss;
+                            if(A?.stats) A.stats.eatenByCrop[cropToSteal] = (A.stats.eatenByCrop[cropToSteal]||0) + actualLoss;
+                        }
+                    }
                   }
               });
-
               
               newState.plots.forEach((plot) => {
                   if (plot.crop) {
@@ -979,7 +1002,7 @@
 
       const handleInsectClick = (evt, kind, id) => {
         let isDead = false;
-        let lootText = '';
+        let loot = {};
         let dropPos = null;
 
         setGameState(prev => {
@@ -997,26 +1020,25 @@
             isDead = true;
             const waveKey = listKey === 'bugs' ? 'bugAttack' : 'beetleAttack';
             const W = ns.world[waveKey];
+            if (W?.stats) W.stats.killed++;
             if (W?.phase === 'active' && W.loot) {
               const coins = randInt(WAVE.lootBudget.coins[0], WAVE.lootBudget.coins[1]);
               ns.eco.coins += coins;
+              loot.coins = coins;
 
               let energy = 0;
               if (WAVE.lootBudget.energy[1] > 0 && Math.random() < 0.5) {
                 energy = randInt(WAVE.lootBudget.energy[0], WAVE.lootBudget.energy[1]);
                 ns.eco.energy.current = clamp(ns.eco.energy.current + energy, 0, ns.eco.energy.max);
+                loot.energy = energy;
               }
 
               let gem = false;
               if (Math.random() < WAVE.lootBudget.gemRareChance) {
                 ns.eco.gems += 1;
                 gem = true;
+                loot.gem = gem;
               }
-              const parts = [];
-              if (coins > 0) parts.push(`+${coins}💰`);
-              if (energy > 0) parts.push(`+${energy}⚡`);
-              if (gem) parts.push(`+1💎`);
-              lootText = (parts.join(' ') || '+0💰');
             }
             ns.world[listKey] = list.filter(i => i.id !== id);
           } else {
@@ -1028,9 +1050,15 @@
         if (isDead) {
           haptic('success');
           const idDrop = Math.random().toString(36).slice(2);
-          setLootDrops(ds => [...ds, { id: idDrop, x: dropPos?.x ?? 50, y: dropPos?.y ?? 50, text: lootText }]);
-          setTimeout(() => setLootDrops(ds => ds.filter(d => d.id !== idDrop)), 900);
-          addFloater(evt.clientX, evt.clientY, lootText);
+          setLootDrops(ds => [...ds, { id: idDrop, x: dropPos?.x ?? 50, y: dropPos?.y ?? 50, ...loot }]);
+          setTimeout(() => setLootDrops(ds => ds.filter(d => d.id !== idDrop)), 1200);
+
+          const parts = [];
+          if (loot.coins > 0) parts.push(`+${loot.coins}`);
+          if (loot.energy > 0) parts.push(`+${loot.energy}`);
+          if (loot.gem) parts.push(`+1`);
+          const floaterText = parts.join(' ');
+          addFloater(evt.clientX, evt.clientY, floaterText || '+0');
         } else {
           haptic('light');
         }
@@ -1049,7 +1077,8 @@
             type: seedType, plantedAt: Date.now(), stage:'Seed', progress:0, 
             water: randInt(45,60), fertilizer: randInt(40,55), quality:1.0, 
             plotId, waterBoostUntil:0, fertBoostUntil:0,
-            frozenUntil: 0, growthBuffUntil: 0, growthBuffStacks: 0
+            frozenUntil: 0, growthBuffUntil: 0, growthBuffStacks: 0,
+            timeLeftCached: null
           };
           next.inv.seeds[seedType] = Math.max(0, (next.inv.seeds[seedType]||0) - 1);
           return next;
@@ -1078,7 +1107,7 @@
           } else if (action === 'shield') {
             if ((gameState.inv.items.PestControl || 0) < 1) { showToast("Нет защиты", true); return; }
             if (!spendEnergy(1)) return; haptic('light');
-            setGameState(prev => ({...prev, plots: prev.plots.map(p => (p.id === plotId && p.crop) ? {...p, crop: {...p.crop, shieldUntil: Date.now() + 10 * 60 * 1000 }} : p), inv: {...prev.inv, items: {...prev.inv.items, PestControl: prev.inv.items.PestControl - 1}}}));
+            setGameState(prev => ({...prev, plots: prev.plots.map(p => (p.id === plotId && p.crop) ? {...p, crop: {...p, crop, shieldUntil: Date.now() + 10 * 60 * 1000 }} : p), inv: {...prev.inv, items: {...prev.inv.items, PestControl: prev.inv.items.PestControl - 1}}}));
           } 
       }
 
@@ -1211,27 +1240,30 @@
                           )}
                         </span>
                       ))}
-                      {lootDrops.map(d => (
-                        <span key={d.id} className="loot-drop" style={{ left: `${d.x}%`, top: `${d.y}%` }}>
-                          {d.text}
-                        </span>
-                      ))}
+                      {lootDrops.map(d => {
+                        const parts = [];
+                        if (d.coins > 0) parts.push({ icon: 'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/coin.png', fallback: '💰', text: `+${d.coins}` });
+                        if (d.energy > 0) parts.push({ icon: 'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/energy.png', fallback: '⚡', text: `+${d.energy}` });
+                        if (d.gem)       parts.push({ icon: 'https://raw.githubusercontent.com/Poklontsevv/growgarden/main/gem.png',   fallback: '💎', text: '+1' });
+
+                        if (parts.length === 0) return null;
+
+                        return (
+                          <span key={d.id} className="loot-drop" style={{left:`${d.x}%`, top:`${d.y}%`}}>
+                            {parts.map((p, i) => (
+                              <span key={i} style={{display:'inline-flex', alignItems:'center', gap:'6px'}}>
+                                <img src={p.icon} alt="" onError={(e)=>{ e.currentTarget.replaceWith(document.createTextNode(p.fallback)); }} />
+                                <span>{p.text}</span>
+                              </span>
+                            ))}
+                          </span>
+                        );
+                      })}
                     </div>
 
                     <div className="plots">
                       {plots.map(plot => (
                           <div key={plot.id} className="plot-cell" data-plot-id={plot.id}>
-                             {plot.crop && plot.crop.stage !== 'Mature' && (
-                              <div className="plot-timer">{fmtMMSS(secondsToNextStage(plot.crop, world))}</div>
-                            )}
-                            {plot.crop && plot.crop.stage === 'Mature' && (
-                              <>
-                                <div className="plot-timer bg-green-600/90">Tap to harvest</div>
-                                <div className="absolute top-2 right-2 bg-black/50 text-white text-xs px-2 py-0.5 rounded-full">
-                                  x{plot.crop.harvestYield ?? Math.max(1, CROP_DATA[plot.crop.type]?.baseYield ?? 1)}
-                                </div>
-                              </>
-                            )}
                             {plot.crop && plot.crop.stage !== 'Mature' && (
                               <div className="plot-toolbar">
                                 <button className="toolbar-btn" title="Полить 1⚡" onClick={(e)=>{ e.stopPropagation(); handleCareFor(plot.id,'water'); }}><img className="ui-icon" alt="Полив" src={ICONS.water} /></button>
@@ -1241,12 +1273,28 @@
                             )}
 
                             <div onClick={() => handlePlotClick(plot)} className="plot cursor-pointer">
+                              {plot.crop && plot.crop.stage !== 'Mature' && (
+                                <div className="plot-timer">
+                                  {fmtMMSS(secondsToNextStageUI(plot.crop, world))}
+                                </div>
+                              )}
+                              {plot.crop && plot.crop.stage === 'Mature' && (
+                                <div className="plot-timer bg-green-600/90">
+                                  Tap to harvest ×{plot.crop.harvestYield ?? Math.max(1, CROP_DATA[plot.crop.type]?.baseYield ?? 1)}
+                                </div>
+                              )}
                               {plot.crop && (
                                 <>
-                                  <div className={`h-full w-full ${plot.crop.stage !== plot.prevStage ? 'stage-pop' : ''}`}> <div className="plot-figure"> {stageIcon(plot.crop.type, plot.crop.stage)} </div> </div>
+                                  <div className={`h-full w-full ${plot.crop.stage !== plot.prevStage ? 'stage-pop' : ''}`}>
+                                    <div className="plot-figure">{stageIcon(plot.crop.type, plot.crop.stage)}</div>
+                                  </div>
                                   <div className="absolute bottom-1 left-1 right-1 flex flex-col gap-0.5">
-                                    <div className="h-1.5 bg-black/20 rounded-full"><div style={{width:`${plot.crop.water}%`}} className="h-full bg-blue-400 rounded-full"></div></div>
-                                    <div className="h-1.5 bg-black/20 rounded-full"><div style={{width:`${plot.crop.fertilizer}%`}} className="h-full bg-orange-400 rounded-full"></div></div>
+                                    <div className="h-1.5 bg-black/20 rounded-full">
+                                      <div style={{width:`${plot.crop.water}%`}} className="h-full bg-blue-400 rounded-full"></div>
+                                    </div>
+                                    <div className="h-1.5 bg-black/20 rounded-full">
+                                      <div style={{width:`${plot.crop.fertilizer}%`}} className="h-full bg-orange-400 rounded-full"></div>
+                                    </div>
                                   </div>
                                 </>
                               )}
