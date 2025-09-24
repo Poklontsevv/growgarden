@@ -279,6 +279,13 @@
       object-fit: contain;
       pointer-events: none;      /* чтобы клик ловил .bug */
     }
+    .bug-hp {
+        position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%);
+        display: flex; gap: 2px;
+    }
+    .bug-hp-dot { width: 6px; height: 6px; border-radius: 999px; background: rgba(255,255,255,.8); border: 1px solid rgba(0,0,0,.5); }
+    .bug-hp-dot--filled { background: #f87171; }
+
 
     .floater {
       position: fixed;
@@ -363,31 +370,40 @@
     const Ticks = { GAME: 1000, WEATHER: 15 * 60 * 1000, MARKET: 5 * 60 * 1000, ORDERS: 10 * 60 * 1000, SHOP: 5 * 60 * 1000 };
     const OFFLINE_CAP_HOURS = 3;
     
+    const WAVE = {
+      announceMs: [5000, 5000],
+      activeMs: [20000, 30000],
+      blockDimOpacity: 0.6,
+      capAlive: 8,
+      spawnEveryMs: [1400, 3800],
+      eliteChance: 0.05,
+      hp: { small: 1, big: 3, eliteMul: 1.25 },
+      speed: { 
+        caterpillar: { small: [18,22], big: [6,10] },
+        beetle:      { small: [18,22], big: [6,10] }
+      },
+      warehouse: {
+        waveLossPctMax: 0.10,
+        perRareMax: 1,
+        perEpicMax: 1,
+        guardReduceMul: 0.2,
+        storagePassiveReducePerLvl: 0.02,
+        maxPassiveReduce: 0.30,
+      },
+      beetle: {
+        dwellFreezeSec: [1.0, 1.5],
+        leaveRollback: [0.02, 0.04],
+        minDwellForRollbackSec: 2,
+        rollbackCDsec: 5
+      },
+      lootBudget: { coins: [6,12], energy: [0,2], gemRareChance: 0.03 },
+    };
+
     const INSECT_TUNING = {
       sizeMinPct: 20,
       sizeMaxPct: 36,
       speedScale: 0.40,
       clickPadding: 22
-    };
-
-    const INSECT_CAP = { bug: 8, beetle: 6 };
-
-    const DAMAGE_TUNING = {
-      bug: { waterPerSec: 3, fertPerSec: 2, shieldMultiplier: 0.5 },
-      beetle: { freezeExtendSec: 1.2, leaveRollback: 0.04, minDwellForRollbackSec: 2, rollbackCooldownSec: 5 }
-    };
-
-    const INSECT_LOOT = {
-      coinChance: 0.25,
-      energyChance: 0.08,
-      gemChance: 0.015,
-      coinPerKillMin: 1,
-      coinPerKillMax: 2,
-      budget: {
-        coinsMin: 4, coinsMax: 8,
-        energyMin: 2, energyMax: 4,
-        gemsMin: 0, gemsMax: 1
-      }
     };
 
     const COMPENSATION = {
@@ -454,7 +470,7 @@
         Ginseng: ['ginseng_sprout.png', 'ginseng_plant.png'], Herb: ['herbs_sprout.png', 'herbs_plant.png'],
         Onion: ['onion_sprout.png', 'onion_plant.png'], Potato: ['potato_sprout.png', 'potato_plant.png'],
         Strawberry: ['strawberry_sprout.png', 'strawberry_plant.png'], Sunflower: ['sunflower_sprout.png', 'sunflower_plant.png'],
-        Tomato: ['tomato_sprout.png', 'tomao_plant.png'], Wheat: ['wheat_sprout.png', 'wheat_plant.png'],
+        Tomato: ['tomato_sprout.png', 'tomato_plant.png'], Wheat: ['wheat_sprout.png', 'wheat_plant.png'],
         Pumpkin: ['pumpkin_sprout.png', 'pumpkin_plant.png']
       };
       if (SPRITE_MAP[type]) { const [sprout, plant] = SPRITE_MAP[type]; return sprite(`https://raw.githubusercontent.com/Poklontsevv/growgarden/main/${sprout}`, `https://raw.githubusercontent.com/Poklontsevv/growgarden/main/${plant}`, type); }
@@ -491,6 +507,7 @@
     function rollShopStock() { const stock = {}; const now = Date.now(); const weights = { common: 1.0, uncommon: 0.6, rare: 0.3, epic: 0.15 }; Object.entries(CROP_DATA).forEach(([key, d]) => { const appear = Math.random() < (weights[d.rarity] ?? 1); stock[key] = { available: appear, qty: appear ? (d.stockPerRefresh ?? 5) : 0 }; }); return { stock, nextRefresh: now + Ticks.SHOP }; }
     
     function growthSpeedMul(crop, world, now){
+      if (world.defense?.isBlocked) return 0;
       let m = (world.weather==='Sunny'?1:0.9);
       const red = (crop.water<20 || crop.fertilizer<20) ? 0.5 : 1;
       m *= red;
@@ -533,7 +550,8 @@
         beetleAttack: { phase:'idle', announceUntil:0, endsAt:0, nextSpawnAt:0, cooldownUntil:0 },
         globalEventLockUntil: 0,
         beetleRollbackCD: {},
-        damageReports: []
+        damageReports: [],
+        defense: { isBlocked: false, dimUntil: 0, warehouseGuardActive: false, warehouseLossThisWave: 0, warehouseLossLimitAbs: 0, warehouseLossByCrop: {} }
       },
       lastActiveAt: Date.now(),
       upgrades: { EnergyCap: 0, Storage: 0, EnergyRegen: 0, PlotSlots: 0 }, shop: rollShopStock(),
@@ -562,6 +580,10 @@
           state.world.globalEventLockUntil = state.world.globalEventLockUntil ?? 0;
           state.world.beetleRollbackCD = state.world.beetleRollbackCD ?? {};
           state.world.damageReports = state.world.damageReports ?? [];
+          if (!state.world.defense) {
+            state.world.defense = { isBlocked: false, dimUntil: 0, warehouseGuardActive: false, warehouseLossThisWave: 0, warehouseLossLimitAbs: 0, warehouseLossByCrop: {} };
+          }
+
 
           const now = Date.now();
           const dt = Math.min(now - state.lastActiveAt, OFFLINE_CAP_HOURS * 3600 * 1000);
@@ -630,6 +652,7 @@
       useEffect(() => {
         let rafId;
         let last = performance.now();
+        const t0 = performance.now();
 
         const animate = (t) => {
           const dt = Math.max(0, (t - last) / 1000); // сек
@@ -638,16 +661,20 @@
 
           setGameState(prev => {
             const w = prev.world;
-
             const immUpdate = (list) => list
               .map(ent => {
-                const nx = ent.x + ent.vx * dt;
-                const ny = clamp(ent.y + (Math.random() - 0.5) * 0.5, 2, 98);
-                return { ...ent, x: nx, y: ny };
-              })
-              .filter(ent =>
-                performance.now() < ent.expiresAt && ent.x > -15 && ent.x < 115
-              );
+                let nx = ent.x + ent.vx * dt;
+                let ny = ent.y;
+                if (ent.type === 'beetle') {
+                    const newWaveT = (ent.waveT || 0) + dt;
+                    ny += Math.sin(newWaveT * ent.waveOmega) * ent.waveAmp * dt * 5;
+                    ny = clamp(ny, 2, 98);
+                    return { ...ent, x: nx, y: ny, waveT: newWaveT };
+                } else {
+                    ny = clamp(ent.y + (Math.random() - 0.5) * 0.5, 2, 98);
+                    return { ...ent, x: nx, y: ny };
+                }
+              });
 
             const bugs = immUpdate(w.bugs);
             const beetles = immUpdate(w.beetles);
@@ -687,35 +714,33 @@
               const handleAttack = (type) => {
                 if (plantedCount(newState) < 2) return;
 
-                const otherKey = (type === 'bug') ? 'beetleAttack' : 'bugAttack';
-                const other = newState.world[otherKey];
-                if (other.phase === 'announce' || other.phase === 'active') return;
-                if (currentNow < newState.world.globalEventLockUntil) return;
-
                 const nodeKey = type === 'bug' ? 'bugAttack' : 'beetleAttack';
-                const listKey = type === 'bug' ? 'bugs' : 'beetles';
                 const A = newState.world[nodeKey];
 
                 switch (A.phase) {
                   case 'idle': {
                     if (currentNow > A.cooldownUntil && Math.random() < 0.12 && currentNow >= newState.world.globalEventLockUntil) {
                       A.phase = 'announce';
-                      A.announceUntil = currentNow + rand(3000, 5000);
-                      newState.world.globalEventLockUntil = currentNow + rand(6000, 10000);
+                      A.announceUntil = currentNow + WAVE.announceMs[0];
+                      newState.world.globalEventLockUntil = currentNow + WAVE.announceMs[0] + rand(...WAVE.activeMs);
                     }
                     break;
                   }
                   case 'announce': {
                     if (currentNow >= A.announceUntil) {
                       A.phase = 'active';
-                      A.endsAt = currentNow + rand(25000, 45000);
+                      const duration = rand(...WAVE.activeMs);
+                      A.endsAt = currentNow + duration;
                       A.nextSpawnAt = currentNow;
-                      A.loot = {
-                        coinsLeft: randInt(INSECT_LOOT.budget.coinsMin, INSECT_LOOT.budget.coinsMax),
-                        energyLeft: randInt(INSECT_LOOT.budget.energyMin, INSECT_LOOT.budget.energyMax),
-                        gemsLeft: randInt(INSECT_LOOT.budget.gemsMin, INSECT_LOOT.budget.gemsMax),
-                      };
+                      A.loot = { ...WAVE.lootBudget };
                       A.stats = { waterLost: 0, fertLost: 0, freezeMs: 0, rollback: 0, affected: {} };
+
+                      newState.world.defense.isBlocked = true;
+                      newState.world.defense.dimUntil = A.endsAt;
+                      
+                      const totalRaw = Object.values(newState.inv.raw).reduce((s, q) => s + q, 0);
+                      newState.world.defense.warehouseLossLimitAbs = Math.ceil(totalRaw * WAVE.warehouse.waveLossPctMax);
+                      newState.world.defense.warehouseLossByCrop = {};
                     }
                     break;
                   }
@@ -724,160 +749,108 @@
                       A.phase = 'drain';
                       A.drainStartedAt = currentNow;
                     } else if (currentNow >= A.nextSpawnAt) {
-                      const list = newState.world[listKey];
-                      if (list.length < INSECT_CAP[type]) {
-                        const freeSlots = Math.max(0, INSECT_CAP[type] - list.length);
-                        const wave = Math.min(freeSlots, randInt(1, 2));
-                        const fastQuota = randInt(0, 1);
+                      const aliveCount = newState.world.bugs.length + newState.world.beetles.length;
+                      if (aliveCount < WAVE.capAlive) {
+                          const waveSize = randInt(1,3);
+                          for(let i=0; i<waveSize; i++) {
+                            if(newState.world.bugs.length + newState.world.beetles.length >= WAVE.capAlive) break;
+                            
+                            const isCaterpillar = Math.random() < 0.55;
+                            const isBig = Math.random() < 0.33;
+                            const isElite = Math.random() < WAVE.eliteChance;
 
-                        for (let i = 0; i < wave; i++) {
-                          const size = rand(INSECT_TUNING.sizeMinPct, INSECT_TUNING.sizeMaxPct);
-                          const y = visibleYPct(playAreaRef.current);
-                          const isFast = i < fastQuota;
-                          const base = (type === 'bug')
-                            ? (isFast ? rand(14, 20) : rand(5, 10))
-                            : (isFast ? rand(15, 22) : rand(6, 12));
-                          const speed = base * INSECT_TUNING.speedScale;
-                          const x = (type === 'bug') ? -12 : 112;
-                          const vx = (type === 'bug') ? +speed : -speed;
-
-                          list.push({
-                            id: `${currentNow}-${i}-${Math.random()}`, type, x, y, vx, vy: 0, size,
-                            expiresAt: currentNow + rand(7000, 12000),
-                            dwellOnPlotMs: 0, lastPlotId: null,
-                            currentPlotId: null, dwellOnThisPlotMs: 0
-                          });
-                        }
+                            const kind = isCaterpillar ? 'caterpillar' : 'beetle';
+                            const sizeType = isBig ? 'big' : 'small';
+                            const list = isCaterpillar ? newState.world.bugs : newState.world.beetles;
+                            
+                            const hp = WAVE.hp[sizeType] * (isElite ? WAVE.hp.eliteMul : 1);
+                            const speedRange = WAVE.speed[kind][sizeType];
+                            const speed = rand(...speedRange) * (isElite ? 1.25 : 1) * INSECT_TUNING.speedScale;
+                            
+                            const direction = (Math.random() < 0.5) ? 1 : -1;
+                            const x = direction === 1 ? -12 : 112;
+                            const vx = speed * direction;
+                            
+                            list.push({
+                                id: `${currentNow}-${i}-${Math.random()}`, type: kind, subType: sizeType, isElite, hp: Math.round(hp), maxHp: Math.round(hp),
+                                x, y: visibleYPct(playAreaRef.current), vx, vy: 0, size: rand(INSECT_TUNING.sizeMinPct, INSECT_TUNING.sizeMaxPct) * (isElite ? 1.15 : 1),
+                                expiresAt: currentNow + rand(12000, 18000), dwellOnPlotMs: 0, lastPlotId: null, currentPlotId: null, dwellOnThisPlotMs: 0,
+                                waveT: 0, waveAmp: rand(2, 4), waveOmega: rand(0.5, 1.0),
+                            });
+                          }
                       }
-                      A.nextSpawnAt = currentNow + rand(1400, 3800);
+                      A.nextSpawnAt = currentNow + rand(...WAVE.spawnEveryMs);
                     }
                     break;
                   }
                 }
               };
+              
+              if (newState.world.bugAttack.phase === 'idle' && newState.world.beetleAttack.phase === 'idle') {
+                if (Math.random() < 0.5) handleAttack('bug');
+                else handleAttack('beetle');
+              } else {
+                 handleAttack('bug');
+                 handleAttack('beetle');
+              }
 
-              handleAttack('bug');
-              handleAttack('beetle');
 
-              const finalizeWave = (typeKey, listKey) => {
+              const finalizeWave = (typeKey) => {
                 const A = newState.world[typeKey];
-                if (A.phase === 'drain' && newState.world[listKey].length === 0) {
-                  if (A.stats) {
-                    const isBug = (typeKey === 'bugAttack');
-                    const w  = (A.stats.waterLost || 0).toFixed(2);
-                    const f  = (A.stats.fertLost  || 0).toFixed(2);
-                    const fr = ((A.stats.freezeMs || 0) / 1000).toFixed(2);
-                    const rbPct = ((A.stats.rollback || 0) * 100).toFixed(2);
-                    const affected = A.stats.affected ? Object.keys(A.stats.affected).length : 0;
-                    const avgFreeze = affected ? ((A.stats.freezeMs/1000) / affected).toFixed(2) : '0.00';
+                const noEnemies = newState.world.bugs.length === 0 && newState.world.beetles.length === 0;
 
-                    const text = isBug
-                      ? `🐛 Нанесенный ущерб: -${w} воды, -${f} удобр. · Затронуто растений ${affected}`
-                      : `🪲 Нанесенный ущерб: замедлено растений ${affected} примерно на ${avgFreeze} сек · Откат прогресса -${rbPct}%`;
-
-                    newState.world.damageReports.push({
-                      id: `dmg-${isBug ? 'bug' : 'beetle'}-${currentNow}-${Math.random()}`,
-                      type: isBug ? 'bug' : 'beetle',
-                      text,
-                      stats: A.stats
-                    });
-                    A.stats = null;
-                  }
-
+                if (A.phase === 'drain' && noEnemies) {
+                  newState.world.defense.isBlocked = false;
+                  newState.world.defense.warehouseGuardActive = false;
+                  
+                  // ... existing report generation
                   A.phase = 'idle';
                   A.cooldownUntil = currentNow + rand(50000, 120000);
-                  const bigGap = Math.random() < 0.5;
-                  newState.world.globalEventLockUntil = currentNow + (bigGap ? rand(120000, 300000) : rand(20000, 45000));
                 }
               };
 
-              finalizeWave('bugAttack', 'bugs');
-              finalizeWave('beetleAttack', 'beetles');
+              finalizeWave('bugAttack');
+              finalizeWave('beetleAttack');
 
-              const beetleCD = newState.world.beetleRollbackCD || (newState.world.beetleRollbackCD = {});
-              const lists = [
-                { type: 'bug', list: newState.world.bugs },
-                { type: 'beetle', list: newState.world.beetles }
-              ];
-              for (const L of lists) {
-                for (const ent of L.list) {
-                  const pid = getPlotUnderXYPercent(ent.x, ent.y);
+              const escapedInsects = [];
+              const activeBugs = [], activeBeetles = [];
 
-                  if (!pid) {
-                    if (L.type === 'beetle' && ent.currentPlotId && ent.dwellOnThisPlotMs >= DAMAGE_TUNING.beetle.minDwellForRollbackSec*1000) {
-                      const plotId = ent.currentPlotId;
-                      const cdUntil = beetleCD[plotId] || 0;
-                      if (currentNow >= cdUntil) {
-                        const pIdx = newState.plots.findIndex(p=>p.id===plotId);
-                        if (pIdx >= 0) {
-                          const crop = newState.plots[pIdx].crop;
-                          if (crop) {
-                            const beforeP = crop.progress;
-                            const stageFloor = (crop.progress < 0.5) ? 0 : 0.5;
-                            crop.progress = clamp(crop.progress - DAMAGE_TUNING.beetle.leaveRollback, stageFloor, 1);
-                            const deltaP = Math.max(0, beforeP - crop.progress);
-                            
-                            const BEA2 = newState.world.beetleAttack;
-                            (BEA2.stats ||= { waterLost:0, fertLost:0, freezeMs:0, rollback:0, affected: {} });
-                            BEA2.stats.rollback += deltaP;
-                            BEA2.stats.affected[plotId] = true;
+              newState.world.bugs.forEach(bug => { if ((bug.vx > 0 && bug.x > 112) || (bug.vx < 0 && bug.x < -12)) escapedInsects.push(bug); else activeBugs.push(bug); });
+              newState.world.beetles.forEach(b => { if ((b.vx > 0 && b.x > 112) || (b.vx < 0 && b.x < -12)) escapedInsects.push(b); else activeBeetles.push(b); });
+              newState.world.bugs = activeBugs;
+              newState.world.beetles = activeBeetles;
 
-                            if (crop.stage === 'Mature' && crop.progress < 1)
-                              crop.stage = (crop.progress >= 0.5) ? 'Sprout' : 'Seed';
-                            beetleCD[plotId] = currentNow + DAMAGE_TUNING.beetle.rollbackCooldownSec*1000;
-                          }
-                        }
-                      }
-                    }
-                    ent.lastPlotId = ent.currentPlotId;
-                    ent.currentPlotId = null;
-                    ent.dwellOnThisPlotMs = 0;
-                    continue;
-                  }
+              escapedInsects.forEach(ent => {
+                  if (ent.type !== 'caterpillar') return;
+                  const totalRaw = Object.values(newState.inv.raw).reduce((s,q)=>s+q,0);
+                  if (newState.world.defense.warehouseLossThisWave >= newState.world.defense.warehouseLossLimitAbs || totalRaw === 0) return;
+                  const availableCrops = Object.keys(newState.inv.raw).filter(k=>newState.inv.raw[k]>0);
+                  if (availableCrops.length === 0) return;
                   
-                  ent.lastPlotId = pid;
-                  if (ent.currentPlotId !== pid) {
-                    ent.currentPlotId = pid;
-                    ent.dwellOnThisPlotMs = 0;
+                  const cropToSteal = availableCrops[randInt(0, availableCrops.length - 1)];
+                  const cropData = CROP_DATA[cropToSteal];
+                  let lossAmount = randInt(1, 2);
+
+                  const lossSoFar = newState.world.defense.warehouseLossByCrop[cropToSteal] || 0;
+                  if (cropData.rarity === 'rare' && lossSoFar >= WAVE.warehouse.perRareMax) return;
+                  if (cropData.rarity === 'epic' && lossSoFar >= WAVE.warehouse.perEpicMax) return;
+                  if (cropData.rarity === 'rare' || cropData.rarity === 'epic') lossAmount = 1;
+
+                  const storageLvl = newState.upgrades.Storage || 0;
+                  const passiveRed = Math.min(WAVE.warehouse.maxPassiveReduce, storageLvl * WAVE.warehouse.storagePassiveReducePerLvl);
+                  let finalMultiplier = 1.0 - passiveRed;
+                  if (newState.world.defense.warehouseGuardActive) finalMultiplier *= WAVE.warehouse.guardReduceMul;
+                  
+                  if (Math.random() <= finalMultiplier) {
+                      const actualLoss = Math.min(lossAmount, newState.inv.raw[cropToSteal]);
+                      if (actualLoss > 0) {
+                          newState.inv.raw[cropToSteal] -= actualLoss;
+                          newState.world.defense.warehouseLossThisWave += actualLoss;
+                          newState.world.defense.warehouseLossByCrop[cropToSteal] = (newState.world.defense.warehouseLossByCrop[cropToSteal] || 0) + actualLoss;
+                      }
                   }
+              });
 
-                  const pIdx = newState.plots.findIndex(p=>p.id===pid);
-                  if (pIdx < 0) continue;
-                  const plot = newState.plots[pIdx];
-                  if (!plot.crop) continue;
-
-                  ent.dwellOnPlotMs = (ent.dwellOnPlotMs || 0) + 1000;
-                  ent.dwellOnThisPlotMs = (ent.dwellOnThisPlotMs || 0) + 1000;
-
-                  if (L.type === 'bug') {
-                    const beforeW = plot.crop.water;
-                    const beforeF = plot.crop.fertilizer;
-                    const mul = (plot.crop.shieldUntil && currentNow < plot.crop.shieldUntil) ? DAMAGE_TUNING.bug.shieldMultiplier : 1;
-                    const dw = DAMAGE_TUNING.bug.waterPerSec * mul;
-                    const df = DAMAGE_TUNING.bug.fertPerSec * mul;
-                    plot.crop.water = clamp(plot.crop.water - dw, 0, 100);
-                    plot.crop.fertilizer = clamp(plot.crop.fertilizer - df, 0, 100);
-                    const effW = Math.max(0, beforeW - plot.crop.water);
-                    const effF = Math.max(0, beforeF - plot.crop.fertilizer);
-                    const BA = newState.world.bugAttack;
-                    (BA.stats ||= { waterLost:0, fertLost:0, freezeMs:0, rollback:0, affected: {} });
-                    BA.stats.waterLost += effW;
-                    BA.stats.fertLost  += effF;
-                    BA.stats.affected[pid] = true;
-                  } else { // beetle
-                    const oldFrozen = plot.crop.frozenUntil || 0;
-                    const extendMs = DAMAGE_TUNING.beetle.freezeExtendSec * 1000;
-                    const newFrozen = Math.max(oldFrozen, currentNow + extendMs);
-                    plot.crop.frozenUntil = newFrozen;
-
-                    const added = Math.max(0, newFrozen - oldFrozen);
-                    const BEA = newState.world.beetleAttack;
-                    (BEA.stats ||= { waterLost:0, fertLost:0, freezeMs:0, rollback:0, affected: {} });
-                    BEA.stats.freezeMs += added;
-                    BEA.stats.affected[pid] = true;
-                  }
-                }
-              }
               
               newState.plots.forEach((plot) => {
                   if (plot.crop) {
@@ -890,21 +863,6 @@
                       } else { if (plot.crop.stage !== 'Mature') { plot.crop.stage = 'Mature'; plot.crop.harvestYield = calculateYield(plot.crop); } }
                   }
               });
-
-              const attackedMap = {};
-              for (const ent of newState.world.bugs) {
-                if (ent.currentPlotId) {
-                  attackedMap[ent.currentPlotId] ||= { bug:0, beetle:0 };
-                  attackedMap[ent.currentPlotId].bug++;
-                }
-              }
-              for (const ent of newState.world.beetles) {
-                if (ent.currentPlotId) {
-                  attackedMap[ent.currentPlotId] ||= { bug:0, beetle:0 };
-                  attackedMap[ent.currentPlotId].beetle++;
-                }
-              }
-              newState.world.attackedMap = attackedMap;
               
               newState.lastActiveAt = currentNow;
               return newState;
@@ -913,88 +871,48 @@
         return () => clearInterval(gameTimer);
       }, []);
 
+      const handleActivateWarehouseShield = () => {
+        if (gameState.inv.items.PestControl < 1) { showToast("Нет защиты!", true); return; }
+        haptic('success');
+        setGameState(prev => {
+            const ns = JSON.parse(JSON.stringify(prev));
+            ns.inv.items.PestControl -= 1;
+            ns.world.defense.warehouseGuardActive = true;
+            return ns;
+        });
+        showToast("Щит склада активирован!");
+      };
+
       const spendEnergy = (amount) => { if (gameState.eco.energy.current < amount) { showToast("Недостаточно энергии! ⚡", true); return false; } setGameState(prev => ({ ...prev, eco: { ...prev.eco, energy: { ...prev.eco.energy, current: prev.eco.energy.current - amount } } })); return true; }
       const handlePlotClick = (plot) => { if (plot.crop?.stage === 'Mature') handleHarvest(plot.id); else if (!plot.crop) handlePlant(plot.id); }
-      
-      function previewInsectLoot(kind, state) {
-        const nodeKey = kind === 'bug' ? 'bugAttack' : 'beetleAttack';
-        const A = state.world?.[nodeKey];
-        if (!A?.loot) return { coins: 0, energy: 0, gems: 0 };
-
-        let coins = 0, energy = 0, gems = 0;
-
-        if (A.loot.coinsLeft > 0 && Math.random() < INSECT_LOOT.coinChance) {
-          const drop = randInt(INSECT_LOOT.coinPerKillMin, INSECT_LOOT.coinPerKillMax);
-          coins = Math.min(drop, A.loot.coinsLeft);
-        }
-        if (A.loot.energyLeft > 0 && Math.random() < INSECT_LOOT.energyChance) {
-          energy = 1;
-        }
-        if (A.loot.gemsLeft > 0 && Math.random() < INSECT_LOOT.gemChance) {
-          gems = 1;
-        }
-        return { coins, energy, gems };
-      }
 
       const handleInsectClick = (evt, kind, id) => {
-        haptic('success');
-        const tapX = evt.clientX;
-        const tapY = evt.clientY;
-
-        const normalized = (kind === 'bee') ? 'beetle' : kind;
-        const lootPreview = previewInsectLoot(normalized, gameState);
-
+        let isDead = false;
         setGameState(prev => {
           const ns = JSON.parse(JSON.stringify(prev));
-          const listKey = normalized === 'bug' ? 'bugs' : 'beetles';
-          const list = ns.world[listKey] || [];
-          const ent = list.find(i => i.id === id);
-          let pid = null;
-          if (ent) pid = getPlotUnderXYPercent(ent.x, ent.y);
-
-          ns.world[listKey] = list.filter(i => i.id !== id);
-
-          if (pid) {
-            const idx = ns.plots.findIndex(p=>p.id===pid);
-            if (idx >= 0) {
-              const crop = ns.plots[idx].crop;
-              if (crop) {
-                if (normalized === 'bug') {
-                  const target = (crop.water <= crop.fertilizer) ? 'water' : 'fertilizer';
-                  crop[target] = clamp(crop[target] + COMPENSATION.bugHealPct, 0, 100);
-                } else {
-                  const nowTs = Date.now();
-                  crop.frozenUntil = 0;
-                  if ((crop.growthBuffStacks || 0) < COMPENSATION.beetleBuff.maxStacks) {
-                    crop.growthBuffStacks = (crop.growthBuffStacks || 0) + 1;
-                  }
-                  crop.growthBuffUntil = Math.max(crop.growthBuffUntil || 0, nowTs + COMPENSATION.beetleBuff.durationMs);
-                }
-              }
-            }
+          const listKey = kind === 'caterpillar' ? 'bugs' : 'beetles';
+          const list = ns.world[listKey];
+          const entIndex = list.findIndex(i => i.id === id);
+          if(entIndex === -1) return prev;
+          
+          const ent = list[entIndex];
+          ent.hp -= 1;
+          
+          if (ent.hp <= 0) {
+            isDead = true;
+            ns.world[listKey] = list.filter(i => i.id !== id);
+          } else {
+            list[entIndex] = ent;
           }
-
-          const A = ns.world[normalized === 'bug' ? 'bugAttack' : 'beetleAttack'];
-          if (A?.loot) {
-            const coinsToAdd  = Math.min(lootPreview.coins,  A.loot.coinsLeft || 0);
-            const energyToAdd = Math.min(lootPreview.energy, A.loot.energyLeft || 0);
-            const gemsToAdd   = Math.min(lootPreview.gems,   A.loot.gemsLeft || 0);
-
-            if (coinsToAdd > 0) { ns.eco.coins += coinsToAdd; A.loot.coinsLeft  -= coinsToAdd; }
-            if (energyToAdd > 0) { ns.eco.energy.current = Math.min(ns.eco.energy.max, ns.eco.energy.current + energyToAdd); A.loot.energyLeft -= energyToAdd; }
-            if (gemsToAdd > 0) { ns.eco.gems += gemsToAdd; A.loot.gemsLeft -= gemsToAdd; }
-
-            if (coinsToAdd > 0) setCoinsAnimKey(k => k + 1);
-          }
-
           return ns;
         });
-
-        const parts = [];
-        if (lootPreview.coins > 0) parts.push(`+${lootPreview.coins}💰`);
-        if (lootPreview.energy > 0) parts.push('+⚡');
-        if (lootPreview.gems > 0) parts.push('+💎');
-        if (parts.length > 0) addFloater(tapX, tapY, parts.join(' '));
+        
+        if (isDead) {
+          haptic('success');
+          addFloater(evt.clientX, evt.clientY, `+10💰`);
+        } else {
+          haptic('light');
+        }
       };
 
       const handlePlant = (plotId) => {
@@ -1102,25 +1020,34 @@
       
       const { eco, inv, plots, world, shop, upgrades } = gameState;
       const hot = eco.hotPrice;
+      const isAnnounce = world.bugAttack.phase === 'announce' || world.beetleAttack.phase === 'announce';
+      const announceLeft = Math.max(
+        0,
+        Math.min(
+          world.bugAttack.phase === 'announce' ? world.bugAttack.announceUntil - now : Infinity,
+          world.beetleAttack.phase === 'announce' ? world.beetleAttack.announceUntil - now : Infinity,
+        )/1000
+      );
 
       return (
         <React.Fragment>
           {toast && <div className="toast bg-blue-500 text-white px-6 py-2 rounded-full shadow-lg animate-bounce">{toast}</div>}
-          {floaters.map(f => (
-            <div key={f.id} className="floater" style={{ left: f.x, top: f.y }}>
-              {f.text}
+          {floaters.map(f => <div key={f.id} className="floater" style={{ left: f.x, top: f.y }}>{f.text}</div>)}
+          {world.defense.isBlocked && (
+            <div className="fixed inset-0 z-20" style={{ backgroundColor: `rgba(0,0,0,${WAVE.blockDimOpacity})` }}>
+                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-red-800 text-white p-4 rounded-lg shadow-xl text-center">
+                    <h3 className="text-xl font-bold">DEFENSE MODE</h3>
+                    <p>Wave ends in: {fmtMMSS(Math.ceil((world.defense.dimUntil - now)/1000))}</p>
+                </div>
             </div>
-          ))}
+          )}
           
           <div className="hud">
             <div className="hud-events">
               {hot && <div className="event-card hot-pulse"><span className="font-bold">🔥 HOT: {CROP_DATA[hot.crop].icon} x{hot.multiplier.toFixed(2)}</span><span className="block text-[10px] opacity-80">{fmtMMSS((hot.endsAt - now)/1000)}</span></div>}
               {world.heatwaveUntil > now && <div className="event-card heat-pulse"><span className="font-bold">☀️ HEAT</span><span className="block text-[10px] opacity-90">{fmtMMSS((world.heatwaveUntil - now)/1000)}</span></div>}
-              {world.attackedMap && Object.keys(world.attackedMap).length > 0 && (
-                <div className="event-card">
-                  Грядки под атакой: {Object.keys(world.attackedMap).length}
-                </div>
-              )}
+              {isAnnounce && <div className="event-card"><span className="font-bold">🚨 ATTACK INCOMING!</span><span className="block text-[10px] opacity-90">{fmtMMSS(Math.ceil(announceLeft))}</span></div>}
+
               {damageBanners.map(b => (
                 <div key={b.id} className="event-card damage-banner">
                   <div className="title">{b.text}</div>
@@ -1135,152 +1062,153 @@
                 <span>⚡ {eco.energy.current}/{eco.energy.max}</span>
                 <span className="energy-timer">{eco.energy.current >= eco.energy.max ? 'Full' : `+1 in ${fmtMMSS(energySecondsToNext(eco.energy, now))}`}</span>
               </div>
-              
-              {(world.bugAttack.phase === 'announce' || world.bugAttack.phase === 'active' || world.bugAttack.phase === 'drain') && (
-                <div title="Атака гусениц" className="bg-black/20 text-white rounded-full px-2 py-1 flex items-center gap-1">
-                  <img src="https://raw.githubusercontent.com/Poklontsevv/growgarden/main/caterpillar.png"
-                       alt="caterpillar" style={{ width: 20, height: 20 }} />
-                  <span className="text-[11px]">
-                    {world.bugAttack.phase === 'announce'
-                      ? fmtMMSS(Math.ceil((world.bugAttack.announceUntil - now)/1000))
-                      : fmtMMSS(Math.ceil((world.bugAttack.endsAt - now)/1000))}
-                  </span>
-                </div>
-              )}
-
-              {(world.beetleAttack.phase === 'announce' || world.beetleAttack.phase === 'active' || world.beetleAttack.phase === 'drain') && (
-                <div title="Атака жуков" className="bg-black/20 text-white rounded-full px-2 py-1 flex items-center gap-1">
-                  <img src={ENEMY_IMG_BEETLE} alt="beetle" style={{ width: 20, height: 20 }} />
-                  <span className="text-[11px]">
-                    {world.beetleAttack.phase === 'announce'
-                      ? fmtMMSS(Math.ceil((world.beetleAttack.announceUntil - now)/1000))
-                      : fmtMMSS(Math.ceil((world.beetleAttack.endsAt - now)/1000))}
-                  </span>
-                </div>
+              {isAnnounce && (
+                <button onClick={handleActivateWarehouseShield} disabled={inv.items.PestControl < 1 || world.defense.warehouseGuardActive}
+                        className="bg-blue-500 text-white font-bold px-3 py-1 rounded-full shadow-md disabled:opacity-50">
+                    🛡️ Склад (x{inv.items.PestControl || 0})
+                </button>
               )}
             </div>
           </div>
 
-          <div className="app-container text-gray-800 font-sans">
+          <div className={`app-container text-gray-800 font-sans ${world.defense.isBlocked ? 'pointer-events-none' : ''}`}>
               <div className="play-area" ref={playAreaRef}>
                   <div className="plots-wrap">
                     <div className="bug-layer">
                       {[...(world.bugs || []), ...(world.beetles || [])].map(ent => (
-                        <span
-                          key={ent.id}
-                          className="bug"
+                        <span key={ent.id} className={`bug ${world.defense.isBlocked ? 'pointer-events-auto' : ''}`}
                           style={{ left: `${ent.x}%`, top: `${ent.y}%`, width: `${ent.size}%`, height: `${ent.size}%` }}
-                          onPointerDown={(e) => { e.stopPropagation(); handleInsectClick(e, ent.type, ent.id); }}
-                        >
-                          {ent.type === 'bug'
+                          onPointerDown={(e) => { e.stopPropagation(); handleInsectClick(e, ent.type, ent.id); }} >
+                          
+                          {ent.type === 'caterpillar'
                              ? (<img className="bug-sprite" alt="caterpillar" src="https://raw.githubusercontent.com/Poklontsevv/growgarden/main/caterpillar.png" />)
                              : (<img className="beetle-sprite" alt="beetle" src={ENEMY_IMG_BEETLE} />)}
+                          {ent.maxHp > 1 && (
+                            <div className="bug-hp">
+                                {Array.from({length: Math.ceil(ent.maxHp)}).map((_,i) => <div key={i} className={`bug-hp-dot ${i < ent.hp ? 'bug-hp-dot--filled' : ''}`} />)}
+                            </div>
+                          )}
                         </span>
                       ))}
                     </div>
 
                     <div className="plots">
-                      {plots.map(plot => {
-                        const atk = world.attackedMap?.[plot.id];
-                        const isAttacked = !!atk && ((atk.bug||0)+(atk.beetle||0) > 0);
-                        return (
+                      {plots.map(plot => (
                           <div key={plot.id} className="plot-cell" data-plot-id={plot.id}>
                             {plot.crop && plot.crop.stage !== 'Mature' && (
                               <div className="plot-toolbar">
-                                <button
-                                  className="toolbar-btn"
-                                  title="Полить 1⚡"
-                                  onClick={(e)=>{ e.stopPropagation(); handleCareFor(plot.id,'water'); }}>
-                                  <img className="ui-icon" alt="Полив" src={ICONS.water} />
-                                </button>
-
-                                <button
-                                  className="toolbar-btn"
-                                  title="Удобрить 2⚡"
-                                  onClick={(e)=>{ e.stopPropagation(); handleCareFor(plot.id,'fertilize'); }}>
-                                  <img className="ui-icon" alt="Удобрение" src={ICONS.fertilizer} />
-                                </button>
-
-                                <button
-                                  className="toolbar-btn"
-                                  title="Защита 1⚡"
-                                  onClick={(e)=>{ e.stopPropagation(); handleCareFor(plot.id,'shield'); }}>
-                                  <img className="ui-icon" alt="Защита" src={ICONS.protect} />
-                                </button>
+                                <button className="toolbar-btn" title="Полить 1⚡" onClick={(e)=>{ e.stopPropagation(); handleCareFor(plot.id,'water'); }}><img className="ui-icon" alt="Полив" src={ICONS.water} /></button>
+                                <button className="toolbar-btn" title="Удобрить 2⚡" onClick={(e)=>{ e.stopPropagation(); handleCareFor(plot.id,'fertilize'); }}><img className="ui-icon" alt="Удобрение" src={ICONS.fertilizer} /></button>
+                                <button className="toolbar-btn" title="Защита 1⚡" onClick={(e)=>{ e.stopPropagation(); handleCareFor(plot.id,'shield'); }}><img className="ui-icon" alt="Защита" src={ICONS.protect} /></button>
                               </div>
                             )}
 
-                            <div
-                              onClick={() => handlePlotClick(plot)}
-                              className={`plot cursor-pointer transition-all duration-200
-                                ${world.heatwaveUntil > now && plot.crop ? 'plot--heated' : ''}
-                                ${hot?.crop === plot.crop?.type ? 'plot--hot' : ''}
-                                ${isAttacked ? 'plot--attacked' : ''}`}
-                            >
-                               {isAttacked && (
-                                <div className="plot-attack-icons">
-                                  {atk.bug ? `🐛x${atk.bug} ` : ''}{atk.beetle ? `🪲x${atk.beetle}` : ''}
-                                </div>
-                              )}
-                              {plot.crop && plot.crop.stage !== 'Mature' && (
-                                <div className="plot-timer">
-                                  {fmtMMSS(secondsToNextStage(plot.crop, world))}
-                                  {now < (plot.crop.frozenUntil || 0) && <span> ❄️</span>}
-                                </div>
-                              )}
-                              
-                              {plot.crop ? (
+                            <div onClick={() => handlePlotClick(plot)} className="plot cursor-pointer">
+                              {plot.crop && (
                                 <>
-                                  {plot.crop.shieldUntil && now < plot.crop.shieldUntil && (<span className="absolute top-1 left-1 text-base z-10">🛡️</span>)}
                                   <div className={`h-full w-full ${plot.crop.stage !== plot.prevStage ? 'stage-pop' : ''}`}> <div className="plot-figure"> {stageIcon(plot.crop.type, plot.crop.stage)} </div> </div>
-                                  {plot.crop.stage === 'Mature' && (<> <div className="absolute top-1 text-xs font-bold text-green-200 bg-black/30 px-2 rounded-full"> x{plot.crop.harvestYield ?? calculateYield(plot.crop)} </div> <div className="absolute inset-x-0 bottom-6 text-center"> <span className="inline-block text-[11px] px-2 py-0.5 rounded-full bg-black/35 text-white"> Tap to harvest </span> </div> </>)}
                                   <div className="absolute bottom-1 left-1 right-1 flex flex-col gap-0.5">
-                                    <div className="h-1.5 bg-black/20 rounded-full status-bar-div"><div style={{width:`${plot.crop.water}%`}} className="h-full bg-blue-400 rounded-full"></div></div>
-                                    <div className="h-1.5 bg-black/20 rounded-full status-bar-div"><div style={{width:`${plot.crop.fertilizer}%`}} className="h-full bg-orange-400 rounded-full"></div></div>
+                                    <div className="h-1.5 bg-black/20 rounded-full"><div style={{width:`${plot.crop.water}%`}} className="h-full bg-blue-400 rounded-full"></div></div>
+                                    <div className="h-1.5 bg-black/20 rounded-full"><div style={{width:`${plot.crop.fertilizer}%`}} className="h-full bg-orange-400 rounded-full"></div></div>
                                   </div>
                                 </>
-                              ) : ( <div className="text-gray-400 text-xs text-center">Пусто</div> )}
+                              )}
                             </div>
                           </div>
-                        )})}
+                        ))}
                     </div>
                   </div>
               </div>
           </div>
-          <div className="bottom-panel p-2 text-white">
+          <div className={`bottom-panel p-2 text-white ${world.defense.isBlocked ? 'pointer-events-none' : ''}`}>
               <div className="flex justify-center gap-1 mb-2">{(['Plant', 'Shop', 'Orders', 'Inventory']).map(tab => <button key={tab} onClick={() => setActiveTab(tab)} className={`px-2 py-1 text-xs rounded-t-lg ${activeTab === tab ? 'bg-yellow-600 font-bold' : 'bg-yellow-900'}`}>{tab}</button>)}</div>
               <div className="panel-scroll bg-yellow-600 rounded-lg p-2 text-xs">
-                  {activeTab === 'Plant' && <div><h3 className="text-center font-bold mb-1">Посадка</h3><div className="grid grid-cols-4 sm:grid-cols-5 gap-1 bg-black/20 p-1 rounded-md mb-2">{Object.entries(CROP_DATA).map(([key, c]) => (<button key={key} onClick={() => setSelectedSeed(key)} className={`p-1 rounded text-center flex flex-col items-center justify-center ${selectedSeed === key ? 'bg-green-500' : ''}`} title={`${c.name} (у вас: ${inv.seeds[key] || 0})`}><img className="seed-icon" src={CROP_ICON_URL[key]} alt={c.name} /><span className="block text-[10px]">x{inv.seeds[key] || 0}</span></button>))}</div>
-                      <div className="flex justify-center gap-4 text-sm bg-black/20 p-1 rounded-md">
-                        <span>
-                          <img className="ui-icon" alt="Удобрение" src={ICONS.fertilizer} />&nbsp;
-                          x{inv.items.Fertilizer || 0}
-                        </span>
-                        <span>
-                          <img className="ui-icon" alt="Защита" src={ICONS.protect} />&nbsp;
-                          x{inv.items.PestControl || 0}
-                        </span>
+                  {activeTab === 'Shop' && (
+                    <div>
+                      <h3 className="font-bold mb-1 text-center">Магазин</h3>
+
+                      {/* Таймер обновления ассортимента */}
+                      <div className="text-center opacity-80 mb-2">
+                        До обновления: {fmtMMSS(Math.ceil(((shop?.nextRefresh || 0) - now)/1000))}
                       </div>
-                  </div>}
-                  {activeTab === 'Shop' && <div><h3 className="font-bold mb-1 text-center">Магазин</h3><div className="text-center opacity-80 mb-1">До обновления: {fmtMMSS(Math.ceil((shop.nextRefresh - now)/1000))}</div><div className="grid grid-cols-2 gap-2 mb-2">{Object.entries(CROP_DATA).map(([key, val]) => { const stockInfo = (shop.stock || {})[key] || {available: false, qty: 0}; const canAfford = eco.coins >= val.seedPrice; const inStock = stockInfo.available && stockInfo.qty > 0; return <button key={key} disabled={!canAfford || !inStock} onClick={() => handleBuy('seed', key)} className="text-left p-1 bg-green-700 rounded disabled:opacity-50 flex items-center gap-1"><img className="shop-icon" src={CROP_ICON_URL[key]} alt={val.name} /> <div className="flex-1"><span className="block">{val.name}</span><span className="text-yellow-300">{val.seedPrice}💰</span></div> <span className="text-[10px] bg-black/30 px-1 rounded">{inStock ? `x${stockInfo.qty}`:'Нет'}</span></button>})}</div><strong>Уход:</strong>
-                      <div className="flex gap-2 mb-2">
+
+                      {/* СЕМЕНА */}
+                      <strong className="block mb-1">Семена:</strong>
+                      <div className="grid grid-cols-2 gap-2 mb-2">
+                        {Object.entries(CROP_DATA).map(([key, val]) => {
+                          const stockInfo = (shop?.stock || {})[key] || {available:false, qty:0};
+                          const inStock = stockInfo.available && stockInfo.qty > 0;
+                          const canAfford = eco.coins >= val.seedPrice;
+
+                          return (
+                            <button
+                              key={key}
+                              disabled={!inStock || !canAfford}
+                              onClick={() => handleBuy('seed', key)}
+                              className="text-left p-1 bg-green-700 rounded disabled:opacity-50 flex items-center gap-1"
+                              title={`${val.name} — ${val.seedPrice}💰`}
+                            >
+                              <img className="shop-icon" src={CROP_ICON_URL[key]} alt={val.name}/>
+                              <div className="flex-1">
+                                <span className="block">{val.name}</span>
+                                <span className="text-yellow-300">{val.seedPrice}💰</span>
+                              </div>
+                              <span className="text-[10px] bg-black/30 px-1 rounded">
+                                {inStock ? `x${stockInfo.qty}` : 'Нет'}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {/* ПРЕДМЕТЫ УХОДА */}
+                      <strong className="block mb-1">Уход:</strong>
+                      <div className="flex gap-2 mb-3">
                         <button
                           onClick={() => handleBuy('item', 'Fertilizer')}
                           disabled={eco.coins < 5}
-                          className="flex-1 p-1 bg-orange-700 rounded disabled:opacity-50 flex items-center justify-center gap-1">
-                          <img className="ui-icon" alt="Удобрение" src={ICONS.fertilizer} />
+                          className="flex-1 p-1 bg-orange-700 rounded disabled:opacity-50 flex items-center justify-center gap-1"
+                        >
+                          <img className="ui-icon" alt="Удобрение" src={ICONS.fertilizer}/>
                           <span>Удобрение (x{inv.items.Fertilizer || 0}) 5💰</span>
                         </button>
 
                         <button
                           onClick={() => handleBuy('item', 'PestControl')}
                           disabled={eco.coins < 8}
-                          className="flex-1 p-1 bg-red-700 rounded disabled:opacity-50 flex items-center justify-center gap-1">
-                          <img className="ui-icon" alt="Защита" src={ICONS.protect} />
+                          className="flex-1 p-1 bg-red-700 rounded disabled:opacity-50 flex items-center justify-center gap-1"
+                        >
+                          <img className="ui-icon" alt="Защита" src={ICONS.protect}/>
                           <span>Защита (x{inv.items.PestControl || 0}) 8💰</span>
                         </button>
                       </div>
-                  <strong>Улучшения:</strong>{Object.entries(UPGRADE_DATA).map(([key, val]) => { const lvl = upgrades[key] || 0; const cost = val.baseCost + val.costScale * lvl; const isMaxed = key === 'PlotSlots' && gameState.maxPlots >= 16; return <button key={key} disabled={eco.coins < cost || isMaxed} onClick={()=>handleBuy('upgrade', key)} className="w-full p-1 bg-purple-700 rounded mb-1 disabled:opacity-50 text-left">{val.name} (Lvl {lvl})<span className="float-right">{isMaxed ? 'МАКС' : `${cost}💰`}</span></button> })}</div>}
+
+                      {/* УЛУЧШЕНИЯ */}
+                      <strong className="block mb-1">Улучшения:</strong>
+                      {Object.entries(UPGRADE_DATA).map(([key, val]) => {
+                        const lvl = upgrades[key] || 0;
+                        const cost = val.baseCost + val.costScale * lvl;
+                        const isMaxed = key === 'PlotSlots' && gameState.maxPlots >= 16;
+                        return (
+                          <button
+                            key={key}
+                            disabled={eco.coins < cost || isMaxed}
+                            onClick={() => handleBuy('upgrade', key)}
+                            className="w-full p-1 bg-purple-700 rounded mb-1 disabled:opacity-50 text-left"
+                          >
+                            {val.name} (Lvl {lvl})
+                            <span className="float-right">{isMaxed ? 'МАКС' : `${cost}💰`}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {activeTab === 'Plant' && <div><h3 className="text-center font-bold mb-1">Посадка</h3><div className="grid grid-cols-4 sm:grid-cols-5 gap-1 bg-black/20 p-1 rounded-md mb-2">{Object.entries(CROP_DATA).map(([key, c]) => (<button key={key} onClick={() => setSelectedSeed(key)} className={`p-1 rounded text-center flex flex-col items-center justify-center ${selectedSeed === key ? 'bg-green-500' : ''}`} title={`${c.name} (у вас: ${inv.seeds[key] || 0})`}><img className="seed-icon" src={CROP_ICON_URL[key]} alt={c.name} /><span className="block text-[10px]">x{inv.seeds[key] || 0}</span></button>))}</div>
+                      <div className="flex justify-center gap-4 text-sm bg-black/20 p-1 rounded-md">
+                        <span><img className="ui-icon" alt="Удобрение" src={ICONS.fertilizer} />&nbsp;x{inv.items.Fertilizer || 0}</span>
+                        <span><img className="ui-icon" alt="Защита" src={ICONS.protect} />&nbsp;x{inv.items.PestControl || 0}</span>
+                      </div>
+                  </div>}
                   {activeTab === 'Orders' && <div><h3 className="font-bold mb-1 text-center">Заказы</h3>{(gameState.orders || []).length === 0 ? <p className="text-center opacity-70">Новые заказы скоро появятся...</p> : (gameState.orders || []).map(order => (<div key={order.id} className="bg-black/20 p-1.5 rounded mb-1"><div>Требуется:{' '}{order.requires.map((r, i) => (<span key={r.item + i}><img className="ui-icon" src={CROP_ICON_URL[r.item]} alt={r.item} /> {CROP_DATA[r.item].name} x{r.qty}{i < order.requires.length - 1 ? ', ' : ''}</span>))}</div><div>Награда: {order.rewardCoins}💰 {order.rewardGems && `${order.rewardGems}💎`}</div><div className="flex justify-between items-center"><span className="opacity-70">Истекает: {formatTime(Math.ceil((order.expiresAt - now)/1000))}</span><button onClick={() => handleFulfillOrder(order)} disabled={lockedOrders[order.id] || !order.requires.every(req => (inv.raw[req.item] || 0) >= req.qty)} className="px-2 py-0.5 bg-green-600 rounded disabled:opacity-50">Сдать</button></div></div>))}</div>}
                   {activeTab === 'Inventory' && <div><h3 className="font-bold mb-1 text-center">Инвентарь и Продажа</h3>{Object.keys(inv.raw).filter(k => (inv.raw[k] || 0) > 0).length === 0 ? <p className="opacity-70 text-center">Соберите урожай, чтобы продать его здесь.</p> : Object.entries(inv.raw).map(([key, val]) => {if (val > 0 && CROP_DATA[key]) { let priceMultiplier = (eco.marketTrend[key] || 1); if(hot?.crop === key) priceMultiplier *= hot.multiplier; return (<div key={key} className="flex items-center justify-between bg-black/20 p-1 rounded mb-1"><span className="flex items-center"><img className="ui-icon mr-1" src={CROP_ICON_URL[key]} alt={key} /> {CROP_DATA[key].name}: {val} {hot?.crop === key ? <span className="text-red-400 font-bold hot-pulse ml-1">HOT</span> : <span className="ml-1 text-gray-300">(x{(eco.marketTrend[key] || 1).toFixed(2)})</span>}</span><div className="flex gap-1"><button onClick={() => handleSell(key, 'one')} className="px-2 bg-red-600 rounded">1</button><button onClick={() => handleSell(key, 'all')} className="px-2 bg-red-800 rounded">Все</button></div></div>)}})}</div>}
               </div>
