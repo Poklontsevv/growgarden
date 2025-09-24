@@ -821,20 +821,33 @@
                 const noEnemies = newState.world.bugs.length === 0 && newState.world.beetles.length === 0;
 
                 if (A.phase === 'drain' && noEnemies) {
-                  // Разблокируем управление сразу после реального конца
                   newState.world.defense.isBlocked = false;
                   newState.world.defense.warehouseGuardActive = false;
 
-                  // Собираем короткий отчёт об уроне этой волны
+                  const reports = [];
                   const stolen = newState.world.defense.warehouseLossThisWave || 0;
                   if (stolen > 0) {
+                    reports.push(`Со склада пропало: -${stolen} ед.`);
+                  }
+
+                  // Проверим все грядки на повреждения
+                  newState.plots.forEach(p => {
+                    if (p.crop && p.crop.stage !== 'Mature') {
+                      // 30% шанс, что грядку «покусали» насекомые
+                      if (Math.random() < 0.3) {
+                        reports.push(`${CROP_DATA[p.crop.type].name} повреждены и погибают`);
+                        p.crop = undefined; // сожрали полностью
+                      }
+                    }
+                  });
+
+                  if (reports.length) {
                     (newState.world.damageReports ||= []).push({
                       id: `rep-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-                      text: `Потери со склада: -${stolen} ед.`,
+                      text: reports.join(' • '),
                     });
                   }
 
-                  // Сбрасываем волну
                   A.phase = 'idle';
                   A.cooldownUntil = currentNow + rand(50000, 120000);
                   A.loot = null;
