@@ -472,6 +472,29 @@
       epic:     { chance: 0.15, qty: [0,2] },
     };
 
+    // === Seed quality meta (из таблицы rollSeedGrade) ===
+    function seedQualityMeta(rarity){
+      const tables = {
+        common:   [{t:1,g:'S',m:1.3},{t:10,g:'A',m:1.2},{t:30,g:'B',m:1.1},{t:70,g:'C',m:1.0},{t:100,g:'D',m:0.9}],
+        uncommon: [{t:3,g:'S',m:1.3},{t:15,g:'A',m:1.2},{t:45,g:'B',m:1.1},{t:85,g:'C',m:1.0},{t:100,g:'D',m:0.9}],
+        rare:     [{t:5,g:'S',m:1.3},{t:25,g:'A',m:1.2},{t:55,g:'B',m:1.1},{t:90,g:'C',m:1.0},{t:100,g:'D',m:0.9}],
+        epic:     [{t:10,g:'S',m:1.3},{t:35,g:'A',m:1.2},{t:70,g:'B',m:1.1},{t:95,g:'C',m:1.0},{t:100,g:'D',m:0.9}],
+      };
+      const table = tables[rarity] || tables.common;
+      let prev = 0, mean = 0;
+      const perc = {S:0,A:0,B:0,C:0,D:0};
+      table.forEach(({t,g,m})=>{
+        const p = Math.max(0, t - prev); prev = t;
+        perc[g] = p; mean += (p/100)*m;
+      });
+      return { perc, mean }; // perc = проценты по S..D, mean = средний множитель 0.9..1.3
+    }
+    function seedStarsByMean(mean){
+      // Преобразуем средний множитель в 1..5 «звёзд»
+      const stars = Math.round(((mean - 0.9) / 0.4) * 5);
+      return Math.min(5, Math.max(1, stars));
+    }
+
     function rollSeedGrade(rarity) {
       const r = Math.random() * 100;
       const grades = {
@@ -1529,6 +1552,8 @@
                           const inStock = stockInfo.available && stockInfo.qty > 0;
                           const canAfford = eco.coins >= val.seedPrice;
                           const rarityInfo = RARITY_STYLES[val.rarity] || {};
+                          const q = seedQualityMeta(val.rarity);
+                          const stars = seedStarsByMean(q.mean);
 
                           return (
                             <button
@@ -1539,14 +1564,35 @@
                               title={`${val.name} — ${val.seedPrice}💰`}
                             >
                               <img className="shop-icon" src={CROP_ICON_URL[key]} alt={val.name}/>
-                              <div className="flex-1">
-                                <span className="block">{val.name} <span className={`font-bold ${rarityInfo.color}`}>{rarityInfo.text}</span></span>
-                                <span className="text-yellow-300">{val.seedPrice}💰</span>
-                                <span className="block text-xs opacity-70">Шанс: {(SHOP_RARITY_PARAMS[val.rarity].chance * 100).toFixed(0)}%</span>
+                              <div className="flex-1 leading-tight">
+                                <div className="font-semibold">
+                                  {val.name} <span className={`font-bold ${rarityInfo.color}`}>{rarityInfo.text}</span>
+                                </div>
+
+                                {/* Рейтинг качества семян */}
+                                <div className="text-[10px] opacity-90 flex items-center gap-1">
+                                  <span>Кач-во:</span>
+                                  <span aria-label="seed quality stars">
+                                    {Array.from({length:5}).map((_,i)=>(
+                                      <span key={i} className={i < stars ? 'opacity-100' : 'opacity-30'}>★</span>
+                                    ))}
+                                  </span>
+                                  <span className="opacity-80">×{q.mean.toFixed(2)}</span>
+                                </div>
+
+                                {/* Шанс появления в магазине */}
+                                <div className="text-[10px] opacity-70">
+                                  Шанс в продаже: {(SHOP_RARITY_PARAMS[val.rarity].chance * 100).toFixed(0)}%
+                                </div>
                               </div>
-                              <span className="text-[10px] bg-black/30 px-1 rounded">
-                                {inStock ? `x${stockInfo.qty}` : 'Нет'}
-                              </span>
+
+                              {/* ПРАВАЯ КОЛОНКА: цена и остаток */}
+                              <div className="flex flex-col items-end min-w-[58px] ml-1">
+                                <div className="text-yellow-300 font-bold">{val.seedPrice}💰</div>
+                                <span className="mt-0.5 text-[10px] bg-black/30 px-1 rounded">
+                                  {inStock ? `x${stockInfo.qty}` : 'Нет'}
+                                </span>
+                              </div>
                             </button>
                           );
                         })}
