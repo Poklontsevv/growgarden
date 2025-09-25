@@ -439,6 +439,10 @@
         rollbackCDsec: 5
       },
       lootBudget: { coins: [6,12], energy: [0,2], gemRareChance: 0.03 },
+      legendary: {
+        perSpawnChance: 0.006, // 0.6% на спавн насекомого
+        maxPerWave: 1
+      }
     };
 
     const INSECT_TUNING = {
@@ -456,6 +460,8 @@
     const rand = (min, max) => min + Math.random() * (max - min);
     const randInt = (min, max) => Math.floor(rand(min, max + 1));
     const clamp = (num, min, max) => Math.min(Math.max(num, min), max);
+    const chance = (p) => Math.random() < p;
+    function pickRandomKey(obj) { const k = Object.keys(obj); return k[randInt(0, k.length-1)]; }
     const fmtMMSS = (totalSec) => { if (totalSec < 0) totalSec = 0; const m = Math.floor(totalSec / 60); const s = totalSec % 60; return `${m}:${s < 10 ? '0' : ''}${s}`; };
     const isSprayerActive = (world, nowTs) => (world?.sprayer?.activeUntil || 0) > nowTs;
     function formatTime(seconds){
@@ -770,6 +776,46 @@
       useEffect(() => { localStorage.setItem(SAVE_KEY, JSON.stringify(gameState)); }, [gameState]);
       const showToast = useCallback((message, isError = false) => { setToast(message); if (isError) haptic('error'); setTimeout(() => setToast(null), 3000); }, []);
       
+      const grantInsectLoot = useCallback((ns, ent) => {
+        const loot = { coins:0, energy:0, gems:0, stars:0, seeds:null };
+
+        if (ent.rarity === 'legendary') {
+            loot.coins += randInt(5,12);
+            if (chance(0.50)) loot.energy += randInt(1,2);
+            if (chance(0.20)) loot.gems   += 1;
+            if (chance(0.40)) loot.seeds  = pickRandomKey(CROP_DATA);
+            if (chance(0.15)) loot.stars  += 1;
+        } else {
+            const isBig = ent.subType === 'big';
+            const coinP = isBig ? 0.75 : 0.55;
+            const eneP  = isBig ? 0.12 : 0.07;
+            const gemP  = isBig ? 0.02 : 0.01;
+            if (chance(coinP)) loot.coins += isBig ? randInt(2,5) : randInt(1,3);
+            if (chance(eneP))  loot.energy += 1;
+            if (chance(gemP))  loot.gems   += 1;
+        }
+
+        // Применяем к экономике/инвентарю
+        ns.eco.coins += loot.coins;
+        ns.eco.gems  += loot.gems;
+        ns.eco.stars += loot.stars;
+        if (loot.energy > 0) {
+            ns.eco.energy.current = clamp(ns.eco.energy.current + loot.energy, 0, ns.eco.energy.max);
+        }
+        if (loot.seeds) {
+            ns.inv.seeds[loot.seeds] = (ns.inv.seeds[loot.seeds] || 0) + 1;
+        }
+
+        // Визуал (минимализм: тост + подпрыгивание монет)
+        const parts = [];
+        if (loot.coins) parts.push(`+${loot.coins}💰`);
+        if (loot.energy) parts.push(`+${loot.energy}⚡`);
+        if (loot.gems) parts.push(`+${loot.gems}💎`);
+        if (loot.stars) parts.push(`+${loot.stars}⭐`);
+        if (loot.seeds) parts.push(`Семена: ${CROP_DATA[loot.seeds].name}`);
+        if (parts.length) setTimeout(() => showToast(parts.join(' · ')), 0);
+      }, [showToast]);
+
       const activateSprayer = useCallback((durationMs) => {
         setGameState(prev => {
           const ns = JSON.parse(JSON.stringify(prev));
@@ -905,8 +951,7 @@
                       const duration = A.plannedActiveDuration || rand(...range);
                       A.endsAt = currentNow + duration;
                       A.nextSpawnAt = currentNow;
-                      // лут отключён
-                      A.stats = { killed:0, escaped:0, eatenByCrop:{}, growthDelaySec:0 };
+                      A.stats = { killed:0, escaped:0, eatenByCrop:{}, growthDelaySec:0, legendarySpawned:0 };
                       A.startedAt = currentNow;
 
                       newState.plots.forEach(p=>{
@@ -940,8 +985,20 @@
                           const sizeType = Math.random() < 0.33 ? 'big' : 'small';
                           const isElite = Math.random() < WAVE.eliteChance;
 
+                          // Определяем легендарность (ограничиваем кол-вом на волну)
+                          let isLegendary = false;
+                          const waveNode = isCaterpillar ? newState.world.bugAttack : newState.world.beetleAttack;
+                          if (waveNode?.stats && waveNode.stats.legendarySpawned < (WAVE.legendary.maxPerWave||0)) {
+                            if (chance(WAVE.legendary.perSpawnChance)) {
+                              isLegendary = true;
+                              waveNode.stats.legendarySpawned += 1;
+                            }
+                          }
+
                           const list = isCaterpillar ? newState.world.bugs : newState.world.beetles;
-                          const hp = WAVE.hp[sizeType] * (isElite ? WAVE.hp.eliteMul : 1);
+                          // HP и размер от легендарности
+                          const baseHp = WAVE.hp[sizeType];
+                          const hp = Math.round(isLegendary ? 4 : baseHp * (isElite ? WAVE.hp.eliteMul : 1));
                           const speedRange = WAVE.speed[isCaterpillar ? 'caterpillar' : 'beetle'][sizeType];
                           const speed = rand(...speedRange) * (isElite ? 1.25 : 1) * INSECT_TUNING.speedScale;
 
@@ -953,7 +1010,8 @@
                             id: `${currentNow}-${i}-${Math.random()}`,
                             type: isCaterpillar ? 'caterpillar' : 'beetle',
                             subType: sizeType, isElite,
-                            hp: Math.round(hp), maxHp: Math.round(hp),
+                            hp: hp, maxHp: hp,
+                            rarity: isLegendary ? 'legendary' : (isElite ? 'elite' : 'normal'),
                             x, y, yMin, yMax, vx, vy: 0,
                             size: rand(INSECT_TUNING.sizeMinPct, INSECT_TUNING.sizeMaxPct) * (isElite ? 1.15 : 1),
                             expiresAt: currentNow + rand(12000, 18000),
@@ -1044,7 +1102,7 @@
           });
         }, Ticks.GAME);
         return () => clearInterval(gameTimer);
-      }, [activateSprayer, showToast]);
+      }, [activateSprayer, showToast, grantInsectLoot]);
 
       const handleActivateWarehouseShield = () => {
         if (gameState.inv.items.PestControl < 1) { showToast("Нет защиты!", true); return; }
@@ -1079,7 +1137,9 @@
             const waveKey = listKey === 'bugs' ? 'bugAttack' : 'beetleAttack';
             const W = ns.world[waveKey];
             if (W?.stats) W.stats.killed++;
-            // никаких наград/энергии/гемов
+            
+            grantInsectLoot(ns, ent);
+
             ns.world[listKey] = list.filter(i => i.id !== id);
           } else {
             list[entIndex] = ent;
@@ -1089,6 +1149,7 @@
 
         if (isDead) {
           haptic('success');
+          setCoinsAnimKey(k => k + 1);
         } else {
           haptic('light');
         }
