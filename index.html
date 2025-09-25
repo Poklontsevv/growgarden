@@ -735,6 +735,14 @@
       const [coinsAnimKey, setCoinsAnimKey] = useState(0);
       const [damageBanners, setDamageBanners] = useState([]);
       const [lockedOrders, setLockedOrders] = useState({});
+      const [lootFx, setLootFx] = useState([]); // [{id, x, y, label}]
+
+      const spawnLootFx = useCallback((xPct, yPct, label) => {
+        const id = `loot-${Date.now()}-${Math.random()}`;
+        setLootFx(prev => [...prev, { id, x: xPct, y: yPct, label }]);
+        // убрать через 1.2с (синхронизировано с @keyframes loot-up)
+        setTimeout(() => setLootFx(prev => prev.filter(fx => fx.id !== id)), 1200);
+      }, []);
 
       useEffect(() => {
         const reports = gameState.world?.damageReports || [];
@@ -806,15 +814,18 @@
             ns.inv.seeds[loot.seeds] = (ns.inv.seeds[loot.seeds] || 0) + 1;
         }
 
-        // Визуал (минимализм: тост + подпрыгивание монет)
         const parts = [];
         if (loot.coins) parts.push(`+${loot.coins}💰`);
         if (loot.energy) parts.push(`+${loot.energy}⚡`);
         if (loot.gems) parts.push(`+${loot.gems}💎`);
         if (loot.stars) parts.push(`+${loot.stars}⭐`);
         if (loot.seeds) parts.push(`Семена: ${CROP_DATA[loot.seeds].name}`);
-        if (parts.length) setTimeout(() => showToast(parts.join(' · ')), 0);
-      }, [showToast]);
+        
+        const label = parts.join(' · ');
+        if (label) {
+          spawnLootFx(ent.x, ent.y, label);
+        }
+      }, [spawnLootFx]);
 
       const activateSprayer = useCallback((durationMs) => {
         setGameState(prev => {
@@ -1102,7 +1113,7 @@
           });
         }, Ticks.GAME);
         return () => clearInterval(gameTimer);
-      }, [activateSprayer, showToast, grantInsectLoot]);
+      }, [activateSprayer, grantInsectLoot]);
 
       const handleActivateWarehouseShield = () => {
         if (gameState.inv.items.PestControl < 1) { showToast("Нет защиты!", true); return; }
@@ -1363,6 +1374,17 @@
                                 {Array.from({length: Math.ceil(ent.maxHp)}).map((_,i) => <div key={i} className={`bug-hp-dot ${i < ent.hp ? 'bug-hp-dot--filled' : ''}`} />)}
                             </div>
                           )}
+                        </span>
+                      ))}
+
+                      {/* ЛУТ FX — поверх насекомых, под HUD */}
+                      {lootFx.map(fx => (
+                        <span
+                          key={fx.id}
+                          className="loot-drop"
+                          style={{ left: `${fx.x}%`, top: `${fx.y}%` }}
+                        >
+                          {fx.label}
                         </span>
                       ))}
                     </div>
