@@ -1215,7 +1215,15 @@
 
       const handleBuy = (type, key) => {
         const { eco } = gameState;
+
         if (type === 'sprayer') {
+          const nowTs = Date.now();
+          // НЕЛЬЗЯ покупать, пока активен текущий спрей
+          if (isSprayerActive(gameState.world, nowTs)) {
+            showToast("Защита уже активна. Дождитесь окончания.", true);
+            return;
+          }
+
           const durationMs = SPRAYER.durations[key] || 0;
           if (!durationMs) { showToast("Неизвестный вариант опрыскивателя", true); return; }
           const price = SPRAYER.cost[key] || {};
@@ -1223,7 +1231,6 @@
           const needGems  = price.gems  || 0;
           const needStars = price.stars || 0;
 
-          // Проверяем баланс
           if (eco.coins < needCoins) { showToast("Недостаточно монет!", true); return; }
           if (eco.gems  < needGems)  { showToast("Недостаточно гемов!", true); return; }
           if (eco.stars < needStars) { showToast("Недостаточно звёзд!", true); return; }
@@ -1298,6 +1305,7 @@
       
       const { eco, inv, plots, world, shop, upgrades } = gameState;
       const hot = eco.hotPrice;
+      const sprayerActive = isSprayerActive(world, now);
       const isAnnounce = world.bugAttack.phase === 'announce' || world.beetleAttack.phase === 'announce';
       const announceLeft = Math.max(
         0,
@@ -1501,25 +1509,25 @@
                       <div className="grid grid-cols-3 gap-2 mb-3">
                         <button
                           onClick={() => handleBuy('sprayer', '10m')}
-                          disabled={eco.coins < (SPRAYER.cost['10m'].coins||0)}
+                          disabled={sprayerActive || eco.coins < (SPRAYER.cost['10m'].coins||0)}
                           className="p-1 bg-emerald-700 rounded disabled:opacity-50 text-center"
-                          title="Опрыскиватель 10 минут"
+                          title={sprayerActive ? "Защита уже активна" : "Опрыскиватель 10 минут"}
                         >
                           🧪 10м — {SPRAYER.cost['10m'].coins}💰
                         </button>
                         <button
                           onClick={() => handleBuy('sprayer', '1h')}
-                          disabled={eco.gems < (SPRAYER.cost['1h'].gems||0)}
+                          disabled={sprayerActive || eco.gems < (SPRAYER.cost['1h'].gems||0)}
                           className="p-1 bg-emerald-700 rounded disabled:opacity-50 text-center"
-                          title="Опрыскиватель 1 час"
+                          title={sprayerActive ? "Защита уже активна" : "Опрыскиватель 1 час"}
                         >
                           🧪 1ч — {SPRAYER.cost['1h'].gems}💎
                         </button>
                         <button
                           onClick={() => handleBuy('sprayer', '24h')}
-                          disabled={eco.stars < (SPRAYER.cost['24h'].stars||0)}
+                          disabled={sprayerActive || eco.stars < (SPRAYER.cost['24h'].stars||0)}
                           className="p-1 bg-emerald-700 rounded disabled:opacity-50 text-center"
-                          title="Опрыскиватель 24 часа"
+                          title={sprayerActive ? "Защита уже активна" : "Опрыскиватель 24 часа"}
                         >
                           🧪 24ч — {SPRAYER.cost['24h'].stars}⭐
                         </button>
@@ -1581,4 +1589,5 @@
   </script>
 </body>
 </html>
+
 
