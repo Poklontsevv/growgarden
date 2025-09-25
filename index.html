@@ -399,10 +399,14 @@
     const Ticks = { GAME: 1000, WEATHER: 15 * 60 * 1000, MARKET: 5 * 60 * 1000, ORDERS: 10 * 60 * 1000, SHOP: 5 * 60 * 1000 };
     const OFFLINE_CAP_HOURS = 3;
 
-    // Сроки действия опрыскивателя
+    // Длительности и стоимость по валютам
     const SPRAYER = {
       durations: { '10m': 10*60*1000, '1h': 60*60*1000, '24h': 24*60*60*1000 },
-      priceCoins: 10
+      cost: {
+        '10m': { coins: 10 },
+        '1h':  { gems: 1 },
+        '24h': { stars: 5 }
+      }
     };
     
     const WAVE = {
@@ -663,7 +667,7 @@
       plots: Array.from({ length: 6 }, (_, i) => ({ id: `plot-${i}` })),
       inv: { seeds: Object.fromEntries(Object.keys(CROP_DATA).map(k=>[k,0])), raw:{}, items:{Fertilizer:0, PestControl:0} },
       orders: [],
-      eco: { coins: 50, gems: 0, energy: { current: 20, max: 20, lastRefill: Date.now(), regenPerMinute: 1 }, marketTrend: Object.fromEntries(Object.keys(CROP_DATA).map(k=>[k,1])), hotPrice: null, },
+      eco: { coins: 50, gems: 0, stars: 0, energy: { current: 20, max: 20, lastRefill: Date.now(), regenPerMinute: 1 }, marketTrend: Object.fromEntries(Object.keys(CROP_DATA).map(k=>[k,1])), hotPrice: null },
       world: { 
         weather: 'Sunny', lastWeatherUpdate: Date.now(), lastOrdersUpdate: Date.now(), 
         heatwaveUntil: 0, bugs: [], beetles: [], nextOrderAt: Date.now() + rand(60, 120)*1000, 
@@ -706,6 +710,7 @@
             state.world.defense = { isBlocked: false, dimUntil: 0, warehouseGuardActive: false, warehouseLossThisWave: 0, warehouseLossLimitAbs: 0, warehouseLossByCrop: {} };
           }
           state.world.sprayer = state.world.sprayer ?? { activeUntil: 0 };
+          state.eco.stars = state.eco.stars ?? 0;
 
 
           const now = Date.now();
@@ -1137,23 +1142,33 @@
       }
 
       const handleBuy = (type, key) => {
-        const level = gameState.upgrades[key] || 0;
+        const { eco } = gameState;
         if (type === 'sprayer') {
-          const cost = SPRAYER.priceCoins;
-          if (gameState.eco.coins < cost) { showToast("Недостаточно монет!", true); return; }
           const durationMs = SPRAYER.durations[key] || 0;
           if (!durationMs) { showToast("Неизвестный вариант опрыскивателя", true); return; }
+          const price = SPRAYER.cost[key] || {};
+          const needCoins = price.coins || 0;
+          const needGems  = price.gems  || 0;
+          const needStars = price.stars || 0;
+
+          // Проверяем баланс
+          if (eco.coins < needCoins) { showToast("Недостаточно монет!", true); return; }
+          if (eco.gems  < needGems)  { showToast("Недостаточно гемов!", true); return; }
+          if (eco.stars < needStars) { showToast("Недостаточно звёзд!", true); return; }
 
           haptic('success');
           setGameState(prev => {
             const ns = JSON.parse(JSON.stringify(prev));
-            ns.eco.coins -= cost;
+            ns.eco.coins -= needCoins;
+            ns.eco.gems  -= needGems;
+            ns.eco.stars -= needStars;
             return ns;
           });
           activateSprayer(durationMs);
-          return; // выходим, чтобы не показывать второй тост снизу
+          return;
         }
-        
+
+        const level = gameState.upgrades[key] || 0;
         const cost = type === 'seed' ? CROP_DATA[key].seedPrice : type === 'item' ? (key === 'Fertilizer' ? 5 : 8) : UPGRADE_DATA[key].baseCost + UPGRADE_DATA[key].costScale * level;
         if (gameState.eco.coins < cost) { showToast("Недостаточно монет!", true); return; }
         const stockInfo = (gameState.shop?.stock || {})[key];
@@ -1256,6 +1271,7 @@
             <div className="hud-resources">
               <div className={`bg-yellow-400 text-yellow-900 font-bold px-3 py-1 rounded-full shadow-md ${coinsAnimKey ? 'coins-bounce' : ''}`}>💰 {eco.coins}</div>
               <div className="bg-purple-400 text-purple-900 font-bold px-3 py-1 rounded-full shadow-md">💎 {eco.gems}</div>
+              <div className="bg-amber-300 text-amber-900 font-bold px-3 py-1 rounded-full shadow-md">⭐ {eco.stars}</div>
               <div className="bg-blue-300 text-blue-900 font-bold px-3 py-1 rounded-full shadow-md leading-tight flex flex-col items-end">
                 <span>⚡ {eco.energy.current}/{eco.energy.max}</span>
                 <span className="energy-timer">{eco.energy.current >= eco.energy.max ? 'Full' : `+1 in ${fmtMMSS(energySecondsToNext(eco.energy, now))}`}</span>
@@ -1402,27 +1418,27 @@
                       <div className="grid grid-cols-3 gap-2 mb-3">
                         <button
                           onClick={() => handleBuy('sprayer', '10m')}
-                          disabled={eco.coins < SPRAYER.priceCoins}
+                          disabled={eco.coins < (SPRAYER.cost['10m'].coins||0)}
                           className="p-1 bg-emerald-700 rounded disabled:opacity-50 text-center"
                           title="Опрыскиватель 10 минут"
                         >
-                          🧪 10м — {SPRAYER.priceCoins}💰
+                          🧪 10м — {SPRAYER.cost['10m'].coins}💰
                         </button>
                         <button
                           onClick={() => handleBuy('sprayer', '1h')}
-                          disabled={eco.coins < SPRAYER.priceCoins}
+                          disabled={eco.gems < (SPRAYER.cost['1h'].gems||0)}
                           className="p-1 bg-emerald-700 rounded disabled:opacity-50 text-center"
                           title="Опрыскиватель 1 час"
                         >
-                          🧪 1ч — {SPRAYER.priceCoins}💰
+                          🧪 1ч — {SPRAYER.cost['1h'].gems}💎
                         </button>
                         <button
                           onClick={() => handleBuy('sprayer', '24h')}
-                          disabled={eco.coins < SPRAYER.priceCoins}
+                          disabled={eco.stars < (SPRAYER.cost['24h'].stars||0)}
                           className="p-1 bg-emerald-700 rounded disabled:opacity-50 text-center"
                           title="Опрыскиватель 24 часа"
                         >
-                          🧪 24ч — {SPRAYER.priceCoins}💰
+                          🧪 24ч — {SPRAYER.cost['24h'].stars}⭐
                         </button>
                       </div>
 
