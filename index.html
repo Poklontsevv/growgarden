@@ -464,6 +464,29 @@
     function pickRandomKey(obj) { const k = Object.keys(obj); return k[randInt(0, k.length-1)]; }
     const fmtMMSS = (totalSec) => { if (totalSec < 0) totalSec = 0; const m = Math.floor(totalSec / 60); const s = totalSec % 60; return `${m}:${s < 10 ? '0' : ''}${s}`; };
     const isSprayerActive = (world, nowTs) => (world?.sprayer?.activeUntil || 0) > nowTs;
+
+    const SHOP_RARITY_PARAMS = {
+      common:   { chance: 0.85, qty: [2,8] },
+      uncommon: { chance: 0.60, qty: [1,5] },
+      rare:     { chance: 0.35, qty: [0,3] },
+      epic:     { chance: 0.15, qty: [0,2] },
+    };
+
+    function rollSeedGrade(rarity) {
+      const r = Math.random() * 100;
+      const grades = {
+        common:   [{t:1,g:'S',m:1.3}, {t:10,g:'A',m:1.2}, {t:30,g:'B',m:1.1}, {t:70,g:'C',m:1.0}, {t:100,g:'D',m:0.9}],
+        uncommon: [{t:3,g:'S',m:1.3}, {t:15,g:'A',m:1.2}, {t:45,g:'B',m:1.1}, {t:85,g:'C',m:1.0}, {t:100,g:'D',m:0.9}],
+        rare:     [{t:5,g:'S',m:1.3}, {t:25,g:'A',m:1.2}, {t:55,g:'B',m:1.1}, {t:90,g:'C',m:1.0}, {t:100,g:'D',m:0.9}],
+        epic:     [{t:10,g:'S',m:1.3},{t:35,g:'A',m:1.2}, {t:70,g:'B',m:1.1}, {t:95,g:'C',m:1.0}, {t:100,g:'D',m:0.9}],
+      };
+      const table = grades[rarity] || grades.common;
+      for(const {t, g, m} of table) {
+        if (r <= t) return { grade: g, mul: m };
+      }
+      return { grade: 'D', mul: 0.9 };
+    }
+
     function formatTime(seconds){
       if (seconds < 0) seconds = 0;
       const m = Math.floor(seconds / 60);
@@ -578,7 +601,6 @@
         Coffee:    { name: 'Кофе', icon: '☕', growTime: 300, basePrice: 60, seedPrice: 75, baseYield: 3, rarity: 'epic' },
         Ginseng:   { name: 'Женьшень', icon: '🌱', growTime: 600, basePrice: 150, seedPrice: 180, baseYield: 1, rarity: 'epic' },
     };
-    Object.values(CROP_DATA).forEach(d => { d.stockPerRefresh = {common:10, uncommon:6, rare:4, epic:2}[d.rarity] || 5; });
     
     const UPGRADE_DATA = {
         EnergyCap: { name: 'Макс. энергия', baseCost: 20, costScale: 10, effect: (lvl) => `+5 Макс. ⚡` },
@@ -629,8 +651,32 @@
       A.plannedActiveDuration = 0;
     }
 
-    const calculateYield = (crop) => { const d = CROP_DATA[crop.type]; const qMul = 0.8 + 0.4 * (crop.quality - 1); const minY = Math.max(1, Math.round(d.baseYield)); const maxY = Math.max(minY, Math.round(d.baseYield * (1 + qMul))); return randInt(minY, maxY); };
-    function rollShopStock() { const stock = {}; const now = Date.now(); const weights = { common: 1.0, uncommon: 0.6, rare: 0.3, epic: 0.15 }; Object.entries(CROP_DATA).forEach(([key, d]) => { const appear = Math.random() < (weights[d.rarity] ?? 1); stock[key] = { available: appear, qty: appear ? (d.stockPerRefresh ?? 5) : 0 }; }); return { stock, nextRefresh: now + Ticks.SHOP }; }
+    const calculateYield = (crop) => {
+        const d = CROP_DATA[crop.type];
+        const qualityMul = crop.qualityMul ?? 1.0;
+        const minY = Math.round(d.baseYield);
+        const maxY = Math.round(d.baseYield * qualityMul);
+        return Math.max(1, randInt(minY, maxY));
+    };
+
+    function rollShopStock() {
+      const stock = {};
+      const now = Date.now();
+      Object.entries(CROP_DATA).forEach(([key, d]) => {
+        const params = SHOP_RARITY_PARAMS[d.rarity];
+        if (params && chance(params.chance)) {
+          const qty = randInt(params.qty[0], params.qty[1]);
+          if (qty > 0) {
+            stock[key] = { available: true, qty: qty };
+          } else {
+            stock[key] = { available: false, qty: 0 };
+          }
+        } else {
+           stock[key] = { available: false, qty: 0 };
+        }
+      });
+      return { stock, nextRefresh: now + Ticks.SHOP };
+    }
     
     function growthSpeedMul(crop, world, now){
       if (world.defense?.isBlocked) return 0;
@@ -1175,9 +1221,11 @@
           const idx = prev.plots.findIndex(p=>p.id===plotId);
           if (idx<0 || prev.plots[idx].crop) return prev;
           const next = JSON.parse(JSON.stringify(prev));
+          const { grade, mul } = rollSeedGrade(CROP_DATA[seedType].rarity);
           next.plots[idx].crop = { 
             type: seedType, plantedAt: Date.now(), stage:'Seed', progress:0, 
-            water: randInt(45,60), fertilizer: randInt(40,55), quality:1.0, 
+            water: randInt(45,60), fertilizer: randInt(40,55), 
+            qualityMul: mul, qualityGrade: grade,
             plotId, waterBoostUntil:0, fertBoostUntil:0,
             frozenUntil: 0, growthBuffUntil: 0, growthBuffStacks: 0,
             timeLeftCached: null
@@ -1208,13 +1256,13 @@
             setGameState(prev => ({...prev, plots: prev.plots.map(p => (p.id===plotId && p.crop) ? {...p, crop:{...p.crop, fertilizer: clamp(p.crop.fertilizer+25,0,100), fertBoostUntil: Date.now() + 15000 }} : p), inv: {...prev.inv, items: {...prev.inv.items, Fertilizer: prev.inv.items.Fertilizer - 1}}}));
           } else if (action === 'shield') {
             if ((gameState.inv.items.PestControl || 0) < 1) { showToast("Нет защиты", true); return; }
-            if (!spendEnergy(1)) return; haptic('light');
+            haptic('light');
             setGameState(prev => ({...prev, plots: prev.plots.map(p => (p.id === plotId && p.crop) ? {...p, crop: {...p.crop, shieldUntil: Date.now() + 10 * 60 * 1000 }} : p), inv: {...prev.inv, items: {...prev.inv.items, PestControl: prev.inv.items.PestControl - 1}}}));
           } 
       }
 
       const handleBuy = (type, key) => {
-        const { eco } = gameState;
+        const { eco, upgrades } = gameState;
 
         if (type === 'sprayer') {
           const nowTs = Date.now();
@@ -1246,23 +1294,36 @@
           activateSprayer(durationMs);
           return;
         }
-
-        const level = gameState.upgrades[key] || 0;
+        
+        const level = upgrades[key] || 0;
+        
+        if (type === 'upgrade') {
+            if (key === 'EnergyRegen' && level >= 8) { showToast("Макс. уровень регенерации", true); return; }
+            if (key === 'EnergyCap' && eco.energy.max >= 100) { showToast("Макс. вместимость энергии", true); return; }
+        }
+        
         const cost = type === 'seed' ? CROP_DATA[key].seedPrice : type === 'item' ? (key === 'Fertilizer' ? 5 : 8) : UPGRADE_DATA[key].baseCost + UPGRADE_DATA[key].costScale * level;
         if (gameState.eco.coins < cost) { showToast("Недостаточно монет!", true); return; }
         const stockInfo = (gameState.shop?.stock || {})[key];
         if (type === 'seed' && (!stockInfo?.available || stockInfo.qty <= 0)) { showToast('Нет в продаже', true); return; }
         
         haptic('success');
+
+        if (type === 'seed') {
+            const { grade, mul } = rollSeedGrade(CROP_DATA[key].rarity);
+            showToast(`Семена ${CROP_DATA[key].name} (грейд ${grade}) куплены`);
+        } else {
+            showToast("Покупка совершена!");
+        }
+
         setGameState(prev => {
           const ns = JSON.parse(JSON.stringify(prev));
           ns.eco.coins -= cost;
           if (type === 'seed') { ns.shop.stock[key].qty--; if (ns.shop.stock[key].qty === 0) ns.shop.stock[key].available = false; ns.inv.seeds[key] = (ns.inv.seeds[key] || 0) + 1; } 
           else if (type === 'item') { ns.inv.items[key] = (ns.inv.items[key] || 0) + 1; } 
-          else if (type === 'upgrade') { ns.upgrades[key] = (ns.upgrades[key] || 0) + 1; if (key === 'EnergyCap') ns.eco.energy.max += 5; else if (key === 'EnergyRegen') ns.eco.energy.regenPerMinute += 0.5; else if (key === 'PlotSlots' && ns.maxPlots < 16) { ns.maxPlots++; ns.plots.push({ id: `plot-${ns.plots.length}` }); } }
+          else if (type === 'upgrade') { ns.upgrades[key] = (ns.upgrades[key] || 0) + 1; if (key === 'EnergyCap') ns.eco.energy.max = Math.min(100, ns.eco.energy.max + 5); else if (key === 'EnergyRegen') ns.eco.energy.regenPerMinute += 0.5; else if (key === 'PlotSlots' && ns.maxPlots < 16) { ns.maxPlots++; ns.plots.push({ id: `plot-${ns.plots.length}` }); } }
           return ns;
         });
-        showToast("Покупка совершена!");
       };
 
       const handleSell = (item, amount) => {
@@ -1314,6 +1375,13 @@
           world.beetleAttack.phase === 'announce' ? world.beetleAttack.announceUntil - now : Infinity,
         )/1000
       );
+
+      const RARITY_STYLES = {
+          common: { text: 'Common', color: 'text-green-300' },
+          uncommon: { text: 'Uncommon', color: 'text-blue-300' },
+          rare: { text: 'Rare', color: 'text-purple-300' },
+          epic: { text: 'Epic', color: 'text-yellow-300' },
+      }
 
       return (
         <React.Fragment>
@@ -1404,7 +1472,7 @@
                               <div className="plot-toolbar">
                                 <button className="toolbar-btn" title="Полить 1⚡" onClick={(e)=>{ e.stopPropagation(); handleCareFor(plot.id,'water'); }}><img className="ui-icon" alt="Полив" src={ICONS.water} /></button>
                                 <button className="toolbar-btn" title="Удобрить 2⚡" onClick={(e)=>{ e.stopPropagation(); handleCareFor(plot.id,'fertilize'); }}><img className="ui-icon" alt="Удобрение" src={ICONS.fertilizer} /></button>
-                                <button className="toolbar-btn" title="Защита 1⚡" onClick={(e)=>{ e.stopPropagation(); handleCareFor(plot.id,'shield'); }}><img className="ui-icon" alt="Защита" src={ICONS.protect} /></button>
+                                <button className="toolbar-btn" title="Защита" onClick={(e)=>{ e.stopPropagation(); handleCareFor(plot.id,'shield'); }}><img className="ui-icon" alt="Защита" src={ICONS.protect} /></button>
                               </div>
                             )}
 
@@ -1460,6 +1528,7 @@
                           const stockInfo = (shop?.stock || {})[key] || {available:false, qty:0};
                           const inStock = stockInfo.available && stockInfo.qty > 0;
                           const canAfford = eco.coins >= val.seedPrice;
+                          const rarityInfo = RARITY_STYLES[val.rarity] || {};
 
                           return (
                             <button
@@ -1471,8 +1540,9 @@
                             >
                               <img className="shop-icon" src={CROP_ICON_URL[key]} alt={val.name}/>
                               <div className="flex-1">
-                                <span className="block">{val.name}</span>
+                                <span className="block">{val.name} <span className={`font-bold ${rarityInfo.color}`}>{rarityInfo.text}</span></span>
                                 <span className="text-yellow-300">{val.seedPrice}💰</span>
+                                <span className="block text-xs opacity-70">Шанс: {(SHOP_RARITY_PARAMS[val.rarity].chance * 100).toFixed(0)}%</span>
                               </div>
                               <span className="text-[10px] bg-black/30 px-1 rounded">
                                 {inStock ? `x${stockInfo.qty}` : 'Нет'}
@@ -1538,7 +1608,7 @@
                       {Object.entries(UPGRADE_DATA).map(([key, val]) => {
                         const lvl = upgrades[key] || 0;
                         const cost = val.baseCost + val.costScale * lvl;
-                        const isMaxed = key === 'PlotSlots' && gameState.maxPlots >= 16;
+                        const isMaxed = (key === 'PlotSlots' && gameState.maxPlots >= 16) || (key === 'EnergyRegen' && lvl >= 8) || (key === 'EnergyCap' && eco.energy.max >= 100);
                         return (
                           <button
                             key={key}
@@ -1589,5 +1659,4 @@
   </script>
 </body>
 </html>
-
 
