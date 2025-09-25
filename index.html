@@ -465,35 +465,18 @@
     const fmtMMSS = (totalSec) => { if (totalSec < 0) totalSec = 0; const m = Math.floor(totalSec / 60); const s = totalSec % 60; return `${m}:${s < 10 ? '0' : ''}${s}`; };
     const isSprayerActive = (world, nowTs) => (world?.sprayer?.activeUntil || 0) > nowTs;
 
-    const SHOP_RARITY_PARAMS = {
-      common:   { chance: 0.85, qty: [2,8] },
-      uncommon: { chance: 0.60, qty: [1,5] },
-      rare:     { chance: 0.35, qty: [0,3] },
-      epic:     { chance: 0.15, qty: [0,2] },
+    const GERMINATION_RARITY = {
+      1: {key:'common',   text:'Common',   color:'text-green-300'},
+      2: {key:'common',   text:'Common',   color:'text-green-300'},
+      3: {key:'uncommon', text:'Uncommon', color:'text-blue-300'},
+      4: {key:'rare',     text:'Rare',     color:'text-purple-300'},
+      5: {key:'epic',     text:'Epic',     color:'text-yellow-300'},
     };
 
-    // === Seed quality meta (из таблицы rollSeedGrade) ===
-    function seedQualityMeta(rarity){
-      const tables = {
-        common:   [{t:1,g:'S',m:1.3},{t:10,g:'A',m:1.2},{t:30,g:'B',m:1.1},{t:70,g:'C',m:1.0},{t:100,g:'D',m:0.9}],
-        uncommon: [{t:3,g:'S',m:1.3},{t:15,g:'A',m:1.2},{t:45,g:'B',m:1.1},{t:85,g:'C',m:1.0},{t:100,g:'D',m:0.9}],
-        rare:     [{t:5,g:'S',m:1.3},{t:25,g:'A',m:1.2},{t:55,g:'B',m:1.1},{t:90,g:'C',m:1.0},{t:100,g:'D',m:0.9}],
-        epic:     [{t:10,g:'S',m:1.3},{t:35,g:'A',m:1.2},{t:70,g:'B',m:1.1},{t:95,g:'C',m:1.0},{t:100,g:'D',m:0.9}],
-      };
-      const table = tables[rarity] || tables.common;
-      let prev = 0, mean = 0;
-      const perc = {S:0,A:0,B:0,C:0,D:0};
-      table.forEach(({t,g,m})=>{
-        const p = Math.max(0, t - prev); prev = t;
-        perc[g] = p; mean += (p/100)*m;
-      });
-      return { perc, mean }; // perc = проценты по S..D, mean = средний множитель 0.9..1.3
-    }
-    function seedStarsByMean(mean){
-      // Преобразуем средний множитель в 1..5 «звёзд»
-      const stars = Math.round(((mean - 0.9) / 0.4) * 5);
-      return Math.min(5, Math.max(1, stars));
-    }
+    const SHOP_CHANCE_BY_STARS = { 1: 0.85, 2: 0.70, 3: 0.55, 4: 0.35, 5: 0.15 };
+    const SHOP_QTY_BY_STARS = { 1: [3, 8], 2: [2, 6], 3: [1, 5], 4: [0, 3], 5: [0, 2] };
+    const PRICE_MUL_BY_STARS = { 1:0.90, 2:1.00, 3:1.10, 4:1.25, 5:1.50 };
+    const YIELD_MUL_BY_STARS = { 1:0.90, 2:1.00, 3:1.10, 4:1.20, 5:1.30 };
 
     function rollSeedGrade(rarity) {
       const r = Math.random() * 100;
@@ -685,17 +668,27 @@
     function rollShopStock() {
       const stock = {};
       const now = Date.now();
-      Object.entries(CROP_DATA).forEach(([key, d]) => {
-        const params = SHOP_RARITY_PARAMS[d.rarity];
-        if (params && chance(params.chance)) {
-          const qty = randInt(params.qty[0], params.qty[1]);
-          if (qty > 0) {
-            stock[key] = { available: true, qty: qty };
-          } else {
-            stock[key] = { available: false, qty: 0 };
-          }
-        } else {
-           stock[key] = { available: false, qty: 0 };
+      Object.entries(CROP_DATA).forEach(([cropKey, cropData]) => {
+        let success = false;
+        for (let stars = 5; stars >= 1; stars--) {
+            if (chance(SHOP_CHANCE_BY_STARS[stars])) {
+                const qtyRange = SHOP_QTY_BY_STARS[stars];
+                const qty = randInt(qtyRange[0], qtyRange[1]);
+                if (qty > 0) {
+                    stock[cropKey] = {
+                        available: true,
+                        qty: qty,
+                        stars: stars,
+                        yieldMul: YIELD_MUL_BY_STARS[stars],
+                        price: Math.ceil(cropData.seedPrice * PRICE_MUL_BY_STARS[stars]),
+                    };
+                    success = true;
+                    break;
+                }
+            }
+        }
+        if (!success) {
+            stock[cropKey] = { available: false, qty: 0 };
         }
       });
       return { stock, nextRefresh: now + Ticks.SHOP };
@@ -740,7 +733,7 @@
     const createInitialState = () => ({
       maxPlots: 6,
       plots: Array.from({ length: 6 }, (_, i) => ({ id: `plot-${i}` })),
-      inv: { seeds: Object.fromEntries(Object.keys(CROP_DATA).map(k=>[k,0])), raw:{}, items:{Fertilizer:0, PestControl:0} },
+      inv: { seeds: {}, seedsByStars: {}, raw:{}, items:{Fertilizer:0, PestControl:0} },
       orders: [],
       eco: { coins: 50, gems: 0, stars: 0, energy: { current: 20, max: 20, lastRefill: Date.now(), regenPerMinute: 1 }, marketTrend: Object.fromEntries(Object.keys(CROP_DATA).map(k=>[k,1])), hotPrice: null },
       world: { 
@@ -772,6 +765,7 @@
           state.shop = state.shop ?? rollShopStock();
           state.upgrades = state.upgrades ?? { EnergyCap: 0, Storage: 0, EnergyRegen: 0, PlotSlots: 0 };
           state.inv.seeds = state.inv.seeds ?? {};
+          state.inv.seedsByStars = state.inv.seedsByStars ?? {};
           state.inv.items = state.inv.items ?? {Fertilizer:0, PestControl:0};
           state.world = state.world ?? {};
           state.world.bugs = state.world.bugs ?? [];
@@ -881,6 +875,7 @@
         }
         if (loot.seeds) {
             ns.inv.seeds[loot.seeds] = (ns.inv.seeds[loot.seeds] || 0) + 1;
+            // Note: Does not add to seedsByStars as quality is random
         }
 
         const parts = [];
@@ -1239,21 +1234,38 @@
         const seedType = selectedSeed;
         if ((gameState.inv.seeds[seedType] || 0) < 1) { showToast(`Купите семена ${CROP_DATA[seedType].name} в Shop`, true); return; }
         if (!spendEnergy(1)) return;
+        
+        let usedStars = 0;
+        const seedsByStars = gameState.inv.seedsByStars[seedType] || {};
+        for (let s = 5; s >= 1; s--) {
+            if (seedsByStars[s] > 0) {
+                usedStars = s;
+                break;
+            }
+        }
+        if (usedStars === 0) {
+            showToast("Ошибка: нет семян для посадки", true);
+            return;
+        }
+
         haptic('success');
         setGameState(prev=>{
           const idx = prev.plots.findIndex(p=>p.id===plotId);
           if (idx<0 || prev.plots[idx].crop) return prev;
           const next = JSON.parse(JSON.stringify(prev));
-          const { grade, mul } = rollSeedGrade(CROP_DATA[seedType].rarity);
+
           next.plots[idx].crop = { 
             type: seedType, plantedAt: Date.now(), stage:'Seed', progress:0, 
             water: randInt(45,60), fertilizer: randInt(40,55), 
-            qualityMul: mul, qualityGrade: grade,
+            qualityMul: YIELD_MUL_BY_STARS[usedStars], qualityStars: usedStars,
             plotId, waterBoostUntil:0, fertBoostUntil:0,
             frozenUntil: 0, growthBuffUntil: 0, growthBuffStacks: 0,
             timeLeftCached: null
           };
+          
           next.inv.seeds[seedType] = Math.max(0, (next.inv.seeds[seedType]||0) - 1);
+          next.inv.seedsByStars[seedType][usedStars] = Math.max(0, (next.inv.seedsByStars[seedType][usedStars]||0) - 1);
+          
           return next;
         });
       };
@@ -1285,16 +1297,14 @@
       }
 
       const handleBuy = (type, key) => {
-        const { eco, upgrades } = gameState;
+        const { eco, upgrades, shop } = gameState;
 
         if (type === 'sprayer') {
           const nowTs = Date.now();
-          // НЕЛЬЗЯ покупать, пока активен текущий спрей
           if (isSprayerActive(gameState.world, nowTs)) {
             showToast("Защита уже активна. Дождитесь окончания.", true);
             return;
           }
-
           const durationMs = SPRAYER.durations[key] || 0;
           if (!durationMs) { showToast("Неизвестный вариант опрыскивателя", true); return; }
           const price = SPRAYER.cost[key] || {};
@@ -1324,27 +1334,51 @@
             if (key === 'EnergyRegen' && level >= 8) { showToast("Макс. уровень регенерации", true); return; }
             if (key === 'EnergyCap' && eco.energy.max >= 100) { showToast("Макс. вместимость энергии", true); return; }
         }
-        
-        const cost = type === 'seed' ? CROP_DATA[key].seedPrice : type === 'item' ? (key === 'Fertilizer' ? 5 : 8) : UPGRADE_DATA[key].baseCost + UPGRADE_DATA[key].costScale * level;
-        if (gameState.eco.coins < cost) { showToast("Недостаточно монет!", true); return; }
-        const stockInfo = (gameState.shop?.stock || {})[key];
+
+        const stockInfo = (shop?.stock || {})[key];
+        let cost = 0;
+        if (type === 'seed') {
+            cost = stockInfo.price;
+        } else if (type === 'item') {
+            cost = (key === 'Fertilizer' ? 5 : 8);
+        } else {
+            cost = UPGRADE_DATA[key].baseCost + UPGRADE_DATA[key].costScale * level;
+        }
+
+        if (eco.coins < cost) { showToast("Недостаточно монет!", true); return; }
         if (type === 'seed' && (!stockInfo?.available || stockInfo.qty <= 0)) { showToast('Нет в продаже', true); return; }
         
         haptic('success');
 
         if (type === 'seed') {
-            const { grade, mul } = rollSeedGrade(CROP_DATA[key].rarity);
-            showToast(`Семена ${CROP_DATA[key].name} (грейд ${grade}) куплены`);
+            showToast(`Семена ${CROP_DATA[key].name} (всхожесть ${'★'.repeat(stockInfo.stars)}${'☆'.repeat(5-stockInfo.stars)}) куплены`);
         } else {
             showToast("Покупка совершена!");
         }
 
         setGameState(prev => {
           const ns = JSON.parse(JSON.stringify(prev));
-          ns.eco.coins -= cost;
-          if (type === 'seed') { ns.shop.stock[key].qty--; if (ns.shop.stock[key].qty === 0) ns.shop.stock[key].available = false; ns.inv.seeds[key] = (ns.inv.seeds[key] || 0) + 1; } 
-          else if (type === 'item') { ns.inv.items[key] = (ns.inv.items[key] || 0) + 1; } 
-          else if (type === 'upgrade') { ns.upgrades[key] = (ns.upgrades[key] || 0) + 1; if (key === 'EnergyCap') ns.eco.energy.max = Math.min(100, ns.eco.energy.max + 5); else if (key === 'EnergyRegen') ns.eco.energy.regenPerMinute += 0.5; else if (key === 'PlotSlots' && ns.maxPlots < 16) { ns.maxPlots++; ns.plots.push({ id: `plot-${ns.plots.length}` }); } }
+          
+          if (type === 'seed') {
+              const sInfo = ns.shop.stock[key];
+              ns.eco.coins -= sInfo.price;
+              sInfo.qty--;
+              if (sInfo.qty <= 0) sInfo.available = false;
+              
+              ns.inv.seeds[key] = (ns.inv.seeds[key] || 0) + 1;
+              if (!ns.inv.seedsByStars[key]) ns.inv.seedsByStars[key] = {};
+              ns.inv.seedsByStars[key][sInfo.stars] = (ns.inv.seedsByStars[key][sInfo.stars] || 0) + 1;
+
+          } else if (type === 'item') {
+              ns.eco.coins -= cost;
+              ns.inv.items[key] = (ns.inv.items[key] || 0) + 1;
+          } else if (type === 'upgrade') {
+              ns.eco.coins -= cost;
+              ns.upgrades[key] = (ns.upgrades[key] || 0) + 1;
+              if (key === 'EnergyCap') ns.eco.energy.max = Math.min(100, ns.eco.energy.max + 5);
+              else if (key === 'EnergyRegen') ns.eco.energy.regenPerMinute += 0.5;
+              else if (key === 'PlotSlots' && ns.maxPlots < 16) { ns.maxPlots++; ns.plots.push({ id: `plot-${ns.plots.length}` }); }
+          }
           return ns;
         });
       };
@@ -1398,13 +1432,6 @@
           world.beetleAttack.phase === 'announce' ? world.beetleAttack.announceUntil - now : Infinity,
         )/1000
       );
-
-      const RARITY_STYLES = {
-          common: { text: 'Common', color: 'text-green-300' },
-          uncommon: { text: 'Uncommon', color: 'text-blue-300' },
-          rare: { text: 'Rare', color: 'text-purple-300' },
-          epic: { text: 'Epic', color: 'text-yellow-300' },
-      }
 
       return (
         <React.Fragment>
@@ -1548,20 +1575,19 @@
                       <strong className="block mb-1">Семена:</strong>
                       <div className="grid grid-cols-2 gap-2 mb-2">
                         {Object.entries(CROP_DATA).map(([key, val]) => {
-                          const stockInfo = (shop?.stock || {})[key] || {available:false, qty:0};
-                          const inStock = stockInfo.available && stockInfo.qty > 0;
-                          const canAfford = eco.coins >= val.seedPrice;
-                          const rarityInfo = RARITY_STYLES[val.rarity] || {};
-                          const q = seedQualityMeta(val.rarity);
-                          const stars = seedStarsByMean(q.mean);
+                          const stockInfo = (shop?.stock || {})[key];
+                          if (!stockInfo || !stockInfo.available) return <div key={key} className="text-left p-1 bg-gray-600/50 rounded flex items-center gap-1 opacity-60"><img className="shop-icon" src={CROP_ICON_URL[key]} alt={val.name}/><div className="flex-1 leading-tight"><div className="font-semibold">{val.name}</div><div className="text-[10px] opacity-70">Нет в продаже</div></div></div>;
 
+                          const canAfford = eco.coins >= stockInfo.price;
+                          const rarityInfo = GERMINATION_RARITY[stockInfo.stars] || {};
+                          
                           return (
                             <button
                               key={key}
-                              disabled={!inStock || !canAfford}
+                              disabled={!canAfford}
                               onClick={() => handleBuy('seed', key)}
                               className="text-left p-1 bg-green-700 rounded disabled:opacity-50 flex items-center gap-1"
-                              title={`${val.name} — ${val.seedPrice}💰`}
+                              title={`${val.name} — ${stockInfo.price}💰`}
                             >
                               <img className="shop-icon" src={CROP_ICON_URL[key]} alt={val.name}/>
                               <div className="flex-1 leading-tight">
@@ -1569,28 +1595,24 @@
                                   {val.name} <span className={`font-bold ${rarityInfo.color}`}>{rarityInfo.text}</span>
                                 </div>
 
-                                {/* Рейтинг качества семян */}
                                 <div className="text-[10px] opacity-90 flex items-center gap-1">
-                                  <span>Кач-во:</span>
+                                  <span>Всхожесть:</span>
                                   <span aria-label="seed quality stars">
                                     {Array.from({length:5}).map((_,i)=>(
-                                      <span key={i} className={i < stars ? 'opacity-100' : 'opacity-30'}>★</span>
+                                      <span key={i} className={i < stockInfo.stars ? 'opacity-100' : 'opacity-30'}>★</span>
                                     ))}
                                   </span>
-                                  <span className="opacity-80">×{q.mean.toFixed(2)}</span>
                                 </div>
-
-                                {/* Шанс появления в магазине */}
+                                
                                 <div className="text-[10px] opacity-70">
-                                  Шанс в продаже: {(SHOP_RARITY_PARAMS[val.rarity].chance * 100).toFixed(0)}%
+                                  Шанс в продаже: {(SHOP_CHANCE_BY_STARS[stockInfo.stars] * 100).toFixed(0)}%
                                 </div>
                               </div>
-
-                              {/* ПРАВАЯ КОЛОНКА: цена и остаток */}
+                              
                               <div className="flex flex-col items-end min-w-[58px] ml-1">
-                                <div className="text-yellow-300 font-bold">{val.seedPrice}💰</div>
+                                <div className="text-yellow-300 font-bold">{stockInfo.price}💰</div>
                                 <span className="mt-0.5 text-[10px] bg-black/30 px-1 rounded">
-                                  {inStock ? `x${stockInfo.qty}` : 'Нет'}
+                                  x{stockInfo.qty}
                                 </span>
                               </div>
                             </button>
