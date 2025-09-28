@@ -258,7 +258,7 @@
       pointer-events:none;
       position:absolute;
       inset:0;
-      z-index:45;
+      z-index:80;   /* выше прочего UI, но ниже defense-overlay(90) */
     }
     
     .bug{
@@ -267,7 +267,7 @@
       transform: translate(-50%, -50%);  /* (x%, y%) = центр */
       pointer-events:auto;
       cursor:pointer;
-      filter: drop-shadow(0 1px 2px rgba(0,0,0,.25));
+      /* тень перенесём на сам спрайт */
       touch-action:none;
       -webkit-tap-highlight-color:transparent;
     }
@@ -284,14 +284,17 @@
       transform:translate(-50%,-50%);
       width:100%; height:100%; object-fit:contain; display:block;
       pointer-events:none;
+      z-index:1;                           /* спрайт над фоновыми элементами */
+      filter: drop-shadow(0 1px 2px rgba(0,0,0,.25));  /* безопасно на img */
+      -webkit-backface-visibility:hidden;  /* подстраховка для WebKit */
     }
 
     .bug-hp{
       position:absolute;
       left:50%; transform:translateX(-50%);
-      bottom:0;
+      bottom:0;                 /* прямо у нижней кромки спрайта */
       display:flex; gap:2px;
-      z-index:2;
+      z-index:2;   /* HP остаются поверх спрайта */
     }
     
     .bug-hp-dot { width: 6px; height: 6px; border-radius: 999px; background: rgba(255,255,255,.85); border: 1px solid rgba(0,0,0,.5); }
@@ -1420,7 +1423,7 @@
       const hot = eco.hotPrice;
       const sprayerActive = isSprayerActive(world, now);
       const isAnnounce = world.bugAttack.phase === 'announce' || world.beetleAttack.phase === 'announce';
-      const uiBlocked = isAnnounce || world.defense.isBlocked;
+      const uiBlocked = world.defense.isBlocked;
       const announceLeft = Math.max(
         0,
         Math.min(
