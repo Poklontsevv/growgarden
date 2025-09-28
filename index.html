@@ -260,18 +260,27 @@
       inset:0;
       z-index:45;
     }
-    /* контейнер одного насекомого */
+    
     .bug{
+      --hitpad: 22px;
       position:absolute;
       filter: drop-shadow(0 1px 2px rgba(0,0,0,.25));
-      pointer-events:auto;
-      cursor:pointer;
-      /* расширяем хитбокс без визуального увеличения */
-      padding: 22px;            /* зона клика вокруг спрайта */
-      margin-left: -22px;
-      margin-top: -22px;
-      touch-action: none;                   /* не перехватывать скролл/зум */
-      -webkit-tap-highlight-color: transparent;
+      pointer-events:auto; cursor:pointer;
+      padding: var(--hitpad);
+      margin-left: calc(var(--hitpad) * -1);
+      margin-top: calc(var(--hitpad) * -1);
+      touch-action:none;
+      -webkit-tap-highlight-color:transparent;
+    }
+    @media (max-width: 420px){
+      .bug{ --hitpad:18px; }
+    }
+
+    .bug-hp{
+      position:absolute;
+      left:50%; transform:translateX(-50%);
+      bottom: calc(var(--hitpad) - 6px); /* точки прямо под спрайтом */
+      display:flex; gap:2px;
     }
     
     /* маленькие UI-иконки в кнопках/лейблах */
@@ -289,13 +298,8 @@
       object-fit: contain;
       pointer-events: none;      /* чтобы клик ловил .bug */
     }
-    .bug-hp{ position:absolute; left:50%; transform:translateX(-50%); bottom:clamp(2px, 0.8vh, 8px); display:flex; gap:2px; }
     .bug-hp-dot { width: 6px; height: 6px; border-radius: 999px; background: rgba(255,255,255,.8); border: 1px solid rgba(0,0,0,.5); }
     .bug-hp-dot--filled { background: #f87171; }
-    @media (max-width: 420px){
-      .bug{ padding:18px; margin-left:-18px; margin-top:-18px; }
-      .bug-hp{ bottom:2px; gap:2px; }
-    }
 
 
     .floater {
@@ -374,6 +378,9 @@
     .defense-overlay { z-index:25; pointer-events:none; }
     .defense-card { pointer-events:auto; }
 
+    @media (max-width: 380px){
+      .shop-grid{ grid-template-columns: 1fr !important; }
+    }
   </style>
 </head>
 <body>
@@ -537,9 +544,16 @@
     function pickSpawnY(paEl){
       const {top, bottom} = visibleRangePct(paEl);
       let y = top + Math.random() * Math.max(1, bottom - top);
+      if (window.innerWidth <= 480) {
+        // сжимаем распределение к верхней половине видимой зоны
+        y = top + (y - top) * 0.5;
+      }
       let tries = 0;
       while(!farEnough(y, 8) && tries < 10){
         y = top + Math.random() * Math.max(1, bottom - top);
+        if (window.innerWidth <= 480) {
+            y = top + (y - top) * 0.5;
+        }
         tries++;
       }
       pushRecentY(y);
@@ -887,7 +901,9 @@
         
         const label = parts.join(' · ');
         if (label) {
-          spawnLootFx(ent.x, ent.y, label);
+          const cx = clamp(ent.x + (ent.size || 0) * 0.5, 0, 100);
+          const cy = clamp(ent.y + (ent.size || 0) * 0.5, 0, 100);
+          spawnLootFx(cx, cy, label);
         }
       }, [spawnLootFx]);
 
@@ -1425,6 +1441,7 @@
       const hot = eco.hotPrice;
       const sprayerActive = isSprayerActive(world, now);
       const isAnnounce = world.bugAttack.phase === 'announce' || world.beetleAttack.phase === 'announce';
+      const uiBlocked = isAnnounce || world.defense.isBlocked;
       const announceLeft = Math.max(
         0,
         Math.min(
@@ -1441,6 +1458,18 @@
                 <div className="defense-card absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-red-800 text-white p-4 rounded-lg shadow-xl text-center">
                     <h3 className="text-xl font-bold">DEFENSE MODE</h3>
                     <p>Wave ends in: {fmtMMSS(Math.ceil((world.defense.dimUntil - now)/1000))}</p>
+                    {world.defense && !world.defense.warehouseGuardActive && (
+                      <button
+                        onClick={handleActivateWarehouseShield}
+                        disabled={inv.items.PestControl < 1}
+                        className="mt-2 bg-blue-500 text-white font-bold px-3 py-1 rounded disabled:opacity-50"
+                      >
+                        🛡️ Активировать щит (x{inv.items.PestControl || 0})
+                      </button>
+                    )}
+                    {world.defense?.warehouseGuardActive && (
+                      <div className="mt-2 text-xs opacity-90">Щит склада активен</div>
+                    )}
                 </div>
             </div>
           )}
@@ -1458,7 +1487,21 @@
                 </div>
               )}
               {isAnnounce && <div className="event-card"><span className="font-bold">🚨 ATTACK INCOMING!</span><span className="block text-[10px] opacity-90">{fmtMMSS(Math.ceil(announceLeft))}</span></div>}
-
+              {(isAnnounce || world.defense.isBlocked) && (
+                <div className="event-card">
+                  <div className="font-bold">🛡️ Защита склада</div>
+                  <div className="text-[10px] opacity-90 mb-1">
+                    Снизит потери сырья во время атаки
+                  </div>
+                  <button
+                    onClick={handleActivateWarehouseShield}
+                    disabled={inv.items.PestControl < 1 || world.defense.warehouseGuardActive}
+                    className="w-full bg-blue-500 text-white font-bold px-2 py-1 rounded shadow disabled:opacity-50"
+                  >
+                    Активировать (x{inv.items.PestControl || 0})
+                  </button>
+                </div>
+              )}
               {damageBanners.map(b => (
                 <div key={b.id} className="event-card damage-banner">
                   <div className="title">{b.text}</div>
@@ -1474,21 +1517,15 @@
                 <span>⚡ {eco.energy.current}/{eco.energy.max}</span>
                 <span className="energy-timer">{eco.energy.current >= eco.energy.max ? 'Full' : `+1 in ${fmtMMSS(energySecondsToNext(eco.energy, now))}`}</span>
               </div>
-              {isAnnounce && (
-                <button onClick={handleActivateWarehouseShield} disabled={inv.items.PestControl < 1 || world.defense.warehouseGuardActive}
-                        className="bg-blue-500 text-white font-bold px-3 py-1 rounded-full shadow-md disabled:opacity-50">
-                    🛡️ Склад (x{inv.items.PestControl || 0})
-                </button>
-              )}
             </div>
           </div>
 
-          <div className={`app-container text-gray-800 font-sans ${world.defense.isBlocked ? 'pointer-events-none' : ''}`}>
+          <div className={`app-container text-gray-800 font-sans ${uiBlocked ? 'pointer-events-none' : ''}`}>
               <div className="play-area" ref={playAreaRef}>
                   <div className="plots-wrap">
                     <div className="bug-layer">
                       {[...(world.bugs || []), ...(world.beetles || [])].map(ent => (
-                        <span key={ent.id} className={`bug ${world.defense.isBlocked ? 'pointer-events-auto' : ''}`}
+                        <span key={ent.id} className="bug"
                           style={{ left: `${ent.x}%`, top: `${ent.y}%`, width: `${ent.size}%`, height: `${ent.size}%` }}
                           onPointerDown={(e) => { e.stopPropagation(); handleInsectClick(e, ent.type, ent.id); }} >
                           
@@ -1559,7 +1596,7 @@
                   </div>
               </div>
           </div>
-          <div className={`bottom-panel p-2 text-white ${world.defense.isBlocked ? 'pointer-events-none' : ''}`}>
+          <div className={`bottom-panel p-2 text-white ${uiBlocked ? 'pointer-events-none' : ''}`}>
               <div className="flex justify-center gap-1 mb-2">{(['Plant', 'Shop', 'Orders', 'Inventory']).map(tab => <button key={tab} onClick={() => setActiveTab(tab)} className={`px-2 py-1 text-xs rounded-t-lg ${activeTab === tab ? 'bg-yellow-600 font-bold' : 'bg-yellow-900'}`}>{tab}</button>)}</div>
               <div className="panel-scroll bg-yellow-600 rounded-lg p-2 text-xs">
                   {activeTab === 'Shop' && (
@@ -1573,7 +1610,7 @@
 
                       {/* СЕМЕНА */}
                       <strong className="block mb-1">Семена:</strong>
-                      <div className="grid grid-cols-2 gap-2 mb-2">
+                      <div className="shop-grid grid grid-cols-2 gap-2 mb-2">
                         {Object.entries(CROP_DATA).map(([key, val]) => {
                           const stockInfo = (shop?.stock || {})[key];
                           if (!stockInfo || !stockInfo.available) return <div key={key} className="text-left p-1 bg-gray-600/50 rounded flex items-center gap-1 opacity-60"><img className="shop-icon" src={CROP_ICON_URL[key]} alt={val.name}/><div className="flex-1 leading-tight"><div className="font-semibold">{val.name}</div><div className="text-[10px] opacity-70">Нет в продаже</div></div></div>;
@@ -1586,30 +1623,30 @@
                               key={key}
                               disabled={!canAfford}
                               onClick={() => handleBuy('seed', key)}
-                              className="text-left p-1 bg-green-700 rounded disabled:opacity-50 flex items-center gap-1"
+                              className="relative overflow-hidden text-left p-1 bg-green-700 rounded disabled:opacity-50 flex items-center gap-1 w-full min-h-[56px]"
                               title={`${val.name} — ${stockInfo.price}💰`}
                             >
                               <img className="shop-icon" src={CROP_ICON_URL[key]} alt={val.name}/>
-                              <div className="flex-1 leading-tight">
-                                <div className="font-semibold">
+                              <div className="flex-1 min-w-0 leading-tight">
+                                <div className="font-semibold truncate">
                                   {val.name} <span className={`font-bold ${rarityInfo.color}`}>{rarityInfo.text}</span>
                                 </div>
 
                                 <div className="text-[10px] opacity-90 flex items-center gap-1">
-                                  <span>Всхожесть:</span>
-                                  <span aria-label="seed quality stars">
+                                  <span className="shrink-0">Всхожесть:</span>
+                                  <span aria-label="seed quality stars" className="truncate">
                                     {Array.from({length:5}).map((_,i)=>(
                                       <span key={i} className={i < stockInfo.stars ? 'opacity-100' : 'opacity-30'}>★</span>
                                     ))}
                                   </span>
                                 </div>
                                 
-                                <div className="text-[10px] opacity-70">
+                                <div className="text-[10px] opacity-70 truncate">
                                   Шанс в продаже: {(SHOP_CHANCE_BY_STARS[stockInfo.stars] * 100).toFixed(0)}%
                                 </div>
                               </div>
                               
-                              <div className="flex flex-col items-end min-w-[58px] ml-1">
+                              <div className="shrink-0 flex flex-col items-end min-w-[60px] ml-1">
                                 <div className="text-yellow-300 font-bold">{stockInfo.price}💰</div>
                                 <span className="mt-0.5 text-[10px] bg-black/30 px-1 rounded">
                                   x{stockInfo.qty}
