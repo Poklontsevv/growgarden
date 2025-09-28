@@ -262,26 +262,44 @@
     }
     
     .bug{
-      --hitpad: 22px;
       position:absolute;
+      left:0; top:0;
+      transform: translate(-50%, -50%);  /* (x%, y%) = центр */
+      pointer-events:auto;
+      cursor:pointer;
       filter: drop-shadow(0 1px 2px rgba(0,0,0,.25));
-      pointer-events:auto; cursor:pointer;
-      padding: var(--hitpad);
-      margin-left: calc(var(--hitpad) * -1);
-      margin-top: calc(var(--hitpad) * -1);
-      touch-action:none;
-      -webkit-tap-highlight-color:transparent;
+      touch-action: none;
+      -webkit-tap-highlight-color: transparent;
+      padding: 22px;            /* расширяем хитбокс */
+      box-sizing: content-box;  /* чтобы внутренний размер = "видимый" спрайт */
     }
-    @media (max-width: 420px){
-      .bug{ --hitpad:18px; }
+
+    .bug-inner{
+      position: relative;
+      width: 100%;
+      height: 100%;
+    }
+    
+    .bug-sprite, .beetle-sprite{
+      position:absolute;
+      left:50%; top:50%;
+      transform:translate(-50%,-50%);   /* спрайт по центру контейнера */
+      width:100%; height:100%;
+      object-fit:contain;
+      pointer-events:none;
     }
 
     .bug-hp{
       position:absolute;
-      left:50%; transform:translateX(-50%);
-      bottom: calc(var(--hitpad) - 6px); /* точки прямо под спрайтом */
+      left:50%;
+      transform:translateX(-50%);
+      bottom: 0;                 /* прямо у нижней кромки спрайта */
       display:flex; gap:2px;
     }
+
+    .bug-hp-dot { width: 6px; height: 6px; border-radius: 999px; background: rgba(255,255,255,.85); border: 1px solid rgba(0,0,0,.5); }
+    .bug-hp-dot--filled { background: #f87171; }
+
     
     /* маленькие UI-иконки в кнопках/лейблах */
     .ui-icon {
@@ -289,18 +307,6 @@
       display:inline-block; vertical-align:middle; 
       object-fit:contain;
     }
-
-    /* сам спрайт занимает исходные width/height контейнера */
-    .bug-sprite, .beetle-sprite {
-      width: 100%;
-      height: 100%;
-      display: block;
-      object-fit: contain;
-      pointer-events: none;      /* чтобы клик ловил .bug */
-    }
-    .bug-hp-dot { width: 6px; height: 6px; border-radius: 999px; background: rgba(255,255,255,.8); border: 1px solid rgba(0,0,0,.5); }
-    .bug-hp-dot--filled { background: #f87171; }
-
 
     .floater {
       position: fixed;
@@ -360,7 +366,7 @@
       z-index: 5;
     }
     .seed-icon { width: 24px; height: 24px; object-fit: contain; display:inline-block; }
-    .shop-icon { width: 22px; height: 22px; object-fit: contain; display:inline-block; margin-right: 4px; }
+    .shop-icon { width:22px; height:22px; object-fit:contain; flex:0 0 22px; }
     
     .damage-banner .title { font-weight: 700; font-size: 12px; }
     .damage-banner .subtitle { font-size: 11px; opacity: .9; }
@@ -375,8 +381,13 @@
     }
     @keyframes damage-fill{ from{ width: 10%; } to{ width: 100%; } }
 
-    .defense-overlay { z-index:25; pointer-events:none; }
-    .defense-card { pointer-events:auto; }
+    .defense-overlay { z-index: 80; pointer-events:none; }
+    .defense-card { 
+        top: 40%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        pointer-events:auto; 
+    }
 
     @media (max-width: 380px){
       .shop-grid{ grid-template-columns: 1fr !important; }
@@ -433,8 +444,6 @@
       },
       warehouse: {
         waveLossPctMax: 0.10,
-        perRareMax: 1,
-        perEpicMax: 1,
         guardReduceMul: 0.2,
         storagePassiveReducePerLvl: 0.02,
         maxPassiveReduce: 0.30,
@@ -525,12 +534,11 @@
       if (!paEl || !layer) return {top:2, bottom:98};
 
       const layerRect = layer.getBoundingClientRect();
-      const paRect    = paEl.getBoundingClientRect();
-      const hudBottom = hud ? hud.getBoundingClientRect().bottom : paRect.top;
-      const panelTop  = panel ? panel.getBoundingClientRect().top : paRect.bottom;
+      const hudBottom = hud ? hud.getBoundingClientRect().bottom : layerRect.top;
+      const panelTop  = panel ? panel.getBoundingClientRect().top : layerRect.bottom;
 
-      const visTopPx = Math.max(paRect.top, hudBottom);      // нижняя граница HUD
-      const visBotPx = Math.min(paRect.bottom, panelTop);    // верхняя граница панели
+      const visTopPx = Math.max(layerRect.top, hudBottom);
+      const visBotPx = Math.min(layerRect.bottom, panelTop);
 
       const topPct = clamp(((visTopPx - layerRect.top) / layerRect.height) * 100, 2, 98);
       const botPct = clamp(((visBotPx - layerRect.top) / layerRect.height) * 100, 2, 98);
@@ -605,21 +613,21 @@
     };
     
     const CROP_DATA = {
-        Carrot:    { name: 'Морковь', icon: '🥕', growTime: 30, basePrice: 4, seedPrice: 5, baseYield: 2, rarity: 'common' },
-        Herb:      { name: 'Травы', icon: '🌿', growTime: 45, basePrice: 5, seedPrice: 6, baseYield: 4, rarity: 'common' },
-        Wheat:     { name: 'Пшеница', icon: '🌾', growTime: 50, basePrice: 6, seedPrice: 7, baseYield: 5, rarity: 'common' },
-        Potato:    { name: 'Картофель', icon: '🥔', growTime: 70, basePrice: 8, seedPrice: 10, baseYield: 3, rarity: 'common' },
-        Tomato:    { name: 'Помидор', icon: '🍅', growTime: 60, basePrice: 7, seedPrice: 8, baseYield: 3, rarity: 'uncommon' },
-        Corn:      { name: 'Кукуруза', icon: '🌽', growTime: 80, basePrice: 10, seedPrice: 12, baseYield: 2, rarity: 'uncommon' },
-        Cucumber:  { name: 'Огурец', icon: '🥒', growTime: 75, basePrice: 9, seedPrice: 11, baseYield: 4, rarity: 'uncommon' },
-        Onion:     { name: 'Лук', icon: '🧅', growTime: 65, basePrice: 8, seedPrice: 9, baseYield: 6, rarity: 'uncommon' },
-        Sunflower: { name: 'Подсолнух', icon: '🌻', growTime: 90, basePrice: 12, seedPrice: 15, baseYield: 1, rarity: 'rare' },
-        Strawberry:{ name: 'Клубника', icon: '🍓', growTime: 120, basePrice: 18, seedPrice: 22, baseYield: 5, rarity: 'rare' },
-        Pumpkin:   { name: 'Тыква', icon: '🎃', growTime: 150, basePrice: 25, seedPrice: 30, baseYield: 1, rarity: 'rare' },
-        Garlic:    { name: 'Чеснок', icon: '🧄', growTime: 100, basePrice: 15, seedPrice: 18, baseYield: 8, rarity: 'rare' },
-        Blueberry: { name: 'Голубика', icon: '🫐', growTime: 240, basePrice: 40, seedPrice: 50, baseYield: 6, rarity: 'epic' },
-        Coffee:    { name: 'Кофе', icon: '☕', growTime: 300, basePrice: 60, seedPrice: 75, baseYield: 3, rarity: 'epic' },
-        Ginseng:   { name: 'Женьшень', icon: '🌱', growTime: 600, basePrice: 150, seedPrice: 180, baseYield: 1, rarity: 'epic' },
+        Carrot:    { name: 'Морковь', icon: '🥕', growTime: 30, basePrice: 4, seedPrice: 5, baseYield: 2 },
+        Herb:      { name: 'Травы', icon: '🌿', growTime: 45, basePrice: 5, seedPrice: 6, baseYield: 4 },
+        Wheat:     { name: 'Пшеница', icon: '🌾', growTime: 50, basePrice: 6, seedPrice: 7, baseYield: 5 },
+        Potato:    { name: 'Картофель', icon: '🥔', growTime: 70, basePrice: 8, seedPrice: 10, baseYield: 3 },
+        Tomato:    { name: 'Помидор', icon: '🍅', growTime: 60, basePrice: 7, seedPrice: 8, baseYield: 3 },
+        Corn:      { name: 'Кукуруза', icon: '🌽', growTime: 80, basePrice: 10, seedPrice: 12, baseYield: 2 },
+        Cucumber:  { name: 'Огурец', icon: '🥒', growTime: 75, basePrice: 9, seedPrice: 11, baseYield: 4 },
+        Onion:     { name: 'Лук', icon: '🧅', growTime: 65, basePrice: 8, seedPrice: 9, baseYield: 6 },
+        Sunflower: { name: 'Подсолнух', icon: '🌻', growTime: 90, basePrice: 12, seedPrice: 15, baseYield: 1 },
+        Strawberry:{ name: 'Клубника', icon: '🍓', growTime: 120, basePrice: 18, seedPrice: 22, baseYield: 5 },
+        Pumpkin:   { name: 'Тыква', icon: '🎃', growTime: 150, basePrice: 25, seedPrice: 30, baseYield: 1 },
+        Garlic:    { name: 'Чеснок', icon: '🧄', growTime: 100, basePrice: 15, seedPrice: 18, baseYield: 8 },
+        Blueberry: { name: 'Голубика', icon: '🫐', growTime: 240, basePrice: 40, seedPrice: 50, baseYield: 6 },
+        Coffee:    { name: 'Кофе', icon: '☕', growTime: 300, basePrice: 60, seedPrice: 75, baseYield: 3 },
+        Ginseng:   { name: 'Женьшень', icon: '🌱', growTime: 600, basePrice: 150, seedPrice: 180, baseYield: 1 },
     };
     
     const UPGRADE_DATA = {
@@ -1147,17 +1155,16 @@
                     const A = newState.world.bugAttack;
                     const totalRaw = Object.values(newState.inv.raw).reduce((s,q)=>s+q,0);
                     if (newState.world.defense.warehouseLossThisWave >= newState.world.defense.warehouseLossLimitAbs || totalRaw === 0) return;
+                    
                     const availableCrops = Object.keys(newState.inv.raw).filter(k=>newState.inv.raw[k]>0);
                     if (availableCrops.length === 0) return;
                     
                     const cropToSteal = availableCrops[randInt(0, availableCrops.length - 1)];
-                    const cropData = CROP_DATA[cropToSteal];
-                    let lossAmount = randInt(1, 2);
-
+                    let lossAmount = 1; // всегда по 1 за прорыв
                     const lossSoFar = newState.world.defense.warehouseLossByCrop[cropToSteal] || 0;
-                    if (cropData.rarity === 'rare' && lossSoFar >= WAVE.warehouse.perRareMax) return;
-                    if (cropData.rarity === 'epic' && lossSoFar >= WAVE.warehouse.perEpicMax) return;
-                    if (cropData.rarity === 'rare' || cropData.rarity === 'epic') lossAmount = 1;
+                    const perCropCap = 2;
+                    if (lossSoFar >= perCropCap) return;
+
 
                     const storageLvl = newState.upgrades.Storage || 0;
                     const passiveRed = Math.min(WAVE.warehouse.maxPassiveReduce, storageLvl * WAVE.warehouse.storagePassiveReducePerLvl);
@@ -1455,26 +1462,21 @@
           {toast && <div className="toast bg-blue-500 text-white px-6 py-2 rounded-full shadow-lg animate-bounce">{toast}</div>}
           {world.defense.isBlocked && (
             <div className="fixed inset-0 defense-overlay" style={{ backgroundColor: `rgba(0,0,0,${WAVE.blockDimOpacity})` }}>
-                <div className="defense-card absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-red-800 text-white p-4 rounded-lg shadow-xl text-center">
-                    <h3 className="text-xl font-bold">DEFENSE MODE</h3>
-                    <p>Wave ends in: {fmtMMSS(Math.ceil((world.defense.dimUntil - now)/1000))}</p>
-                    {world.defense && !world.defense.warehouseGuardActive && (
-                      <button
-                        onClick={handleActivateWarehouseShield}
-                        disabled={inv.items.PestControl < 1}
-                        className="mt-2 bg-blue-500 text-white font-bold px-3 py-1 rounded disabled:opacity-50"
-                      >
-                        🛡️ Активировать щит (x{inv.items.PestControl || 0})
-                      </button>
-                    )}
-                    {world.defense?.warehouseGuardActive && (
-                      <div className="mt-2 text-xs opacity-90">Щит склада активен</div>
-                    )}
+                <div className="defense-card absolute bg-red-800 text-white p-4 rounded-lg shadow-xl text-center">
+                  <h3 className="text-xl font-bold">DEFENSE MODE</h3>
+                  <p>Wave ends in: {fmtMMSS(Math.ceil((world.defense.dimUntil - now)/1000))}</p>
+
+                  <button
+                    onClick={handleActivateWarehouseShield}
+                    disabled={inv.items.PestControl < 1 || world.defense.warehouseGuardActive}
+                    className="mt-3 px-3 py-2 rounded-lg bg-indigo-600 disabled:opacity-50">
+                    🛡️ Активировать щит (x{inv.items.PestControl || 0})
+                  </button>
                 </div>
             </div>
           )}
           
-          <div className="hud">
+          <div className={`hud ${world.defense.isBlocked ? 'pointer-events-none' : ''}`}>
             <div className="hud-events">
               {hot && <div className="event-card hot-pulse"><span className="font-bold">🔥 HOT: {CROP_DATA[hot.crop].icon} x{hot.multiplier.toFixed(2)}</span><span className="block text-[10px] opacity-80">{fmtMMSS((hot.endsAt - now)/1000)}</span></div>}
               {world.heatwaveUntil > now && <div className="event-card heat-pulse"><span className="font-bold">☀️ HEAT</span><span className="block text-[10px] opacity-90">{fmtMMSS((world.heatwaveUntil - now)/1000)}</span></div>}
@@ -1528,15 +1530,16 @@
                         <span key={ent.id} className="bug"
                           style={{ left: `${ent.x}%`, top: `${ent.y}%`, width: `${ent.size}%`, height: `${ent.size}%` }}
                           onPointerDown={(e) => { e.stopPropagation(); handleInsectClick(e, ent.type, ent.id); }} >
-                          
-                          {ent.type === 'caterpillar'
-                             ? (<img className="bug-sprite" alt="caterpillar" src="https://raw.githubusercontent.com/Poklontsevv/growgarden/main/caterpillar.png" />)
-                             : (<img className="beetle-sprite" alt="beetle" src={ENEMY_IMG_BEETLE} />)}
-                          {ent.maxHp > 1 && (
-                            <div className="bug-hp">
-                                {Array.from({length: Math.ceil(ent.maxHp)}).map((_,i) => <div key={i} className={`bug-hp-dot ${i < ent.hp ? 'bug-hp-dot--filled' : ''}`} />)}
-                            </div>
-                          )}
+                            <span className="bug-inner">
+                                {ent.type === 'caterpillar'
+                                 ? (<img className="bug-sprite" alt="caterpillar" src="https://raw.githubusercontent.com/Poklontsevv/growgarden/main/caterpillar.png" />)
+                                 : (<img className="beetle-sprite" alt="beetle" src={ENEMY_IMG_BEETLE} />)}
+                                {ent.maxHp > 1 && (
+                                <div className="bug-hp">
+                                    {Array.from({length: Math.ceil(ent.maxHp)}).map((_,i) => <div key={i} className={`bug-hp-dot ${i < ent.hp ? 'bug-hp-dot--filled' : ''}`} />)}
+                                </div>
+                                )}
+                            </span>
                         </span>
                       ))}
 
@@ -1610,14 +1613,14 @@
 
                       {/* СЕМЕНА */}
                       <strong className="block mb-1">Семена:</strong>
-                      <div className="shop-grid grid grid-cols-2 gap-2 mb-2">
+                      <div className="shop-grid grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
                         {Object.entries(CROP_DATA).map(([key, val]) => {
                           const stockInfo = (shop?.stock || {})[key];
                           if (!stockInfo || !stockInfo.available) return <div key={key} className="text-left p-1 bg-gray-600/50 rounded flex items-center gap-1 opacity-60"><img className="shop-icon" src={CROP_ICON_URL[key]} alt={val.name}/><div className="flex-1 leading-tight"><div className="font-semibold">{val.name}</div><div className="text-[10px] opacity-70">Нет в продаже</div></div></div>;
-
+                          
                           const canAfford = eco.coins >= stockInfo.price;
                           const rarityInfo = GERMINATION_RARITY[stockInfo.stars] || {};
-                          
+
                           return (
                             <button
                               key={key}
@@ -1628,10 +1631,7 @@
                             >
                               <img className="shop-icon" src={CROP_ICON_URL[key]} alt={val.name}/>
                               <div className="flex-1 min-w-0 leading-tight">
-                                <div className="font-semibold truncate">
-                                  {val.name} <span className={`font-bold ${rarityInfo.color}`}>{rarityInfo.text}</span>
-                                </div>
-
+                                <div className="font-semibold truncate">{val.name}</div>
                                 <div className="text-[10px] opacity-90 flex items-center gap-1">
                                   <span className="shrink-0">Всхожесть:</span>
                                   <span aria-label="seed quality stars" className="truncate">
@@ -1640,17 +1640,13 @@
                                     ))}
                                   </span>
                                 </div>
-                                
                                 <div className="text-[10px] opacity-70 truncate">
                                   Шанс в продаже: {(SHOP_CHANCE_BY_STARS[stockInfo.stars] * 100).toFixed(0)}%
                                 </div>
                               </div>
-                              
                               <div className="shrink-0 flex flex-col items-end min-w-[60px] ml-1">
                                 <div className="text-yellow-300 font-bold">{stockInfo.price}💰</div>
-                                <span className="mt-0.5 text-[10px] bg-black/30 px-1 rounded">
-                                  x{stockInfo.qty}
-                                </span>
+                                <span className="mt-0.5 text-[10px] bg-black/30 px-1 rounded">x{stockInfo.qty}</span>
                               </div>
                             </button>
                           );
